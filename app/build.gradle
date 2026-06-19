@@ -11,8 +11,8 @@ android {
         applicationId 'com.jlxc.mikucarlauncher'
         minSdk 21
         targetSdk 28
-        versionCode 73
-        versionName '0.7.2.1-rear-ai-vision-node'
+        versionCode 74
+        versionName '0.7.3.0-rear-ai-text-display-node'
     }
 
     // GitHub 网页上传不会自动删除旧文件。

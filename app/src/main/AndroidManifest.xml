@@ -73,6 +73,10 @@
             android:screenOrientation="landscape"
             android:exported="false" />
         <activity
+            android:name=".MikuTextDisplayNodeSettingsActivity"
+            android:screenOrientation="landscape"
+            android:exported="false" />
+        <activity
             android:name=".DesktopSettingsActivity"
             android:screenOrientation="landscape"
             android:exported="false" />

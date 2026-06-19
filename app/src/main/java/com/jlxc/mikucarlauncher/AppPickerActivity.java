@@ -98,6 +98,10 @@ public class AppPickerActivity extends Activity {
                         editor.putString("common_app_" + slot + "_pkg", pkg);
                         editor.putString("common_app_" + slot + "_cls", cls);
                         editor.putString("common_app_" + slot + "_label", label);
+                        editor.remove("common_app_" + slot + "_type");
+                        editor.remove("common_app_" + slot + "_text_payload");
+                        editor.remove("common_app_" + slot + "_text_icon");
+                        editor.putLong("common_apps_updated_at", System.currentTimeMillis());
                     } else if ("music".equals(target)) {
                         editor.putString("music_package", pkg);
                         editor.putString("music_label", label + " / " + pkg);

@@ -200,6 +200,7 @@ public class LauncherCanvasView extends View {
     private final List<RectF> commonAppHitRects = new ArrayList<>();
     private long lastCommonAppsLoadTime = 0L;
     private int commonIconSignature = 0;
+    private long commonConfigSignature = 0L;
 
     // 应用抽屉分页与实体按键选择状态。
     private int appDrawerPage = 0;
@@ -1245,7 +1246,9 @@ public class LauncherCanvasView extends View {
             float centerX = (cellLeft + cellRight) / 2f;
             float iconLeft = centerX - iconSize / 2f;
             float iconTop = card.top + 18f;
-            if (app.icon != null) {
+            if (app.isTextDisplayShortcut()) {
+                drawMikuTextShortcutIcon(c, new RectF(iconLeft, iconTop, iconLeft + iconSize, iconTop + iconSize), app.iconText, app.isShoutShortcut());
+            } else if (app.icon != null) {
                 app.icon.setBounds((int) iconLeft, (int) iconTop, (int) (iconLeft + iconSize), (int) (iconTop + iconSize));
                 app.icon.draw(c);
             }
@@ -1259,12 +1262,43 @@ public class LauncherCanvasView extends View {
         }
     }
 
+    private void drawMikuTextShortcutIcon(Canvas c, RectF iconRect, String iconText, boolean shout) {
+        Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+        fill.setStyle(Paint.Style.FILL);
+        fill.setColor(shout ? accentColor() : placeholderSurfaceColor());
+        c.drawRoundRect(iconRect, 14f, 14f, fill);
+
+        Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
+        stroke.setStyle(Paint.Style.STROKE);
+        stroke.setStrokeWidth(2.5f);
+        stroke.setColor(accentColor());
+        c.drawRoundRect(iconRect, 14f, 14f, stroke);
+
+        String s = iconText == null || iconText.trim().length() == 0 ? (shout ? "喊" : "文") : iconText.trim();
+        if (s.length() > 2) {
+            s = s.substring(0, 2);
+        }
+
+        Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        iconPaint.setTextAlign(Paint.Align.CENTER);
+        iconPaint.setFakeBoldText(true);
+        iconPaint.setTextSize(s.length() > 1 ? 24f : 30f);
+        iconPaint.setColor(shout ? Color.WHITE : accentColor());
+        Paint.FontMetrics fm = iconPaint.getFontMetrics();
+        float cy = (iconRect.top + iconRect.bottom) / 2f - (fm.ascent + fm.descent) / 2f;
+        c.drawText(s, (iconRect.left + iconRect.right) / 2f, cy, iconPaint);
+    }
+
     private boolean handleCommonAppsTouch(float x, float y, long durationMs) {
         loadCommonAppsIfNeeded();
         for (int i = 0; i < commonAppHitRects.size() && i < commonAppsCache.size(); i++) {
             if (commonAppHitRects.get(i).contains(x, y)) {
                 final AppEntry app = commonAppsCache.get(i);
-                if (durationMs >= 650) {
+                if (app.isShoutShortcut()) {
+                    showMikuTextShoutDialog();
+                } else if (app.isTextDisplayShortcut()) {
+                    sendMikuTextShortcut(app.textPayload, app.label);
+                } else if (durationMs >= 650) {
                     AppActionHelper.showAppActions(getContext(), app.label, app.pkg, app.cls, new Runnable() {
                         @Override
                         public void run() {
@@ -1284,7 +1318,13 @@ public class LauncherCanvasView extends View {
         loadCommonAppsIfNeeded();
         if (!commonAppsCache.isEmpty()) {
             AppEntry app = commonAppsCache.get(0);
-            openApp(app.label, app.pkg, app.cls);
+            if (app.isShoutShortcut()) {
+                showMikuTextShoutDialog();
+            } else if (app.isTextDisplayShortcut()) {
+                sendMikuTextShortcut(app.textPayload, app.label);
+            } else {
+                openApp(app.label, app.pkg, app.cls);
+            }
         } else {
             Toast.makeText(getContext(), "4号卡片尚未设置常用软件", Toast.LENGTH_SHORT).show();
         }
@@ -1292,20 +1332,37 @@ public class LauncherCanvasView extends View {
 
     private void loadCommonAppsIfNeeded() {
         long now = System.currentTimeMillis();
+        SharedPreferences sp = getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        long configSignature = sp.getLong("common_apps_updated_at", 0L);
         int iconSignature = IconPackManager.getIconSignature(getContext());
-        if (!commonAppsCache.isEmpty() && now - lastCommonAppsLoadTime < 2000L && iconSignature == commonIconSignature) {
+        if (!commonAppsCache.isEmpty()
+                && now - lastCommonAppsLoadTime < 2000L
+                && iconSignature == commonIconSignature
+                && configSignature == commonConfigSignature) {
             return;
         }
         commonIconSignature = iconSignature;
+        commonConfigSignature = configSignature;
 
         ensureCommonAppsConfigured();
         commonAppsCache.clear();
-        SharedPreferences sp = getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        sp = getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         PackageManager pm = getContext().getPackageManager();
         for (int i = 0; i < 6; i++) {
+            String type = sp.getString("common_app_" + i + "_type", "app");
             String pkg = sp.getString("common_app_" + i + "_pkg", "");
             String cls = sp.getString("common_app_" + i + "_cls", "");
             String label = sp.getString("common_app_" + i + "_label", "");
+            if (MikuTextDisplayNodeController.isTextDisplayCommonType(type)
+                    || MikuTextDisplayNodeController.isTextDisplayMarker(pkg)) {
+                String payload = sp.getString("common_app_" + i + "_text_payload", "");
+                String iconText = sp.getString("common_app_" + i + "_text_icon", MikuTextDisplayNodeController.COMMON_TYPE_SHOUT.equals(type) ? "喊" : "文");
+                if (label == null || label.length() == 0) {
+                    label = MikuTextDisplayNodeController.COMMON_TYPE_SHOUT.equals(type) ? "喊话文字" : "快捷文字";
+                }
+                commonAppsCache.add(AppEntry.textDisplay(label, type, payload, iconText));
+                continue;
+            }
             if (pkg == null || pkg.length() == 0) {
                 continue;
             }
@@ -1379,6 +1436,10 @@ public class LauncherCanvasView extends View {
         editor.putString("common_app_" + slot + "_pkg", app.pkg);
         editor.putString("common_app_" + slot + "_cls", app.cls == null ? "" : app.cls);
         editor.putString("common_app_" + slot + "_label", app.label == null ? "" : app.label);
+        editor.remove("common_app_" + slot + "_type");
+        editor.remove("common_app_" + slot + "_text_payload");
+        editor.remove("common_app_" + slot + "_text_icon");
+        editor.putLong("common_apps_updated_at", System.currentTimeMillis());
     }
 
     private AppEntry resolveActionApp(Intent intent, String fallbackLabel) {
@@ -2674,6 +2735,47 @@ public class LauncherCanvasView extends View {
         return (cachedApps.size() + pageSize - 1) / pageSize;
     }
 
+    private void sendMikuTextShortcut(String text, String label) {
+        if (!MikuTextDisplayNodeController.isEnabled(getContext())
+                || MikuTextDisplayNodeController.getIp(getContext()).length() == 0) {
+            Toast.makeText(getContext(), "请先在设置里启用快捷文字屏节点并填写屏幕 IP", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (text == null || text.trim().length() == 0) {
+            Toast.makeText(getContext(), "快捷文字为空", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        MikuTextDisplayNodeController.sendShow(getContext(), text);
+        Toast.makeText(getContext(), "已发送文字：" + (label == null || label.length() == 0 ? text : label), Toast.LENGTH_SHORT).show();
+    }
+
+    private void showMikuTextShoutDialog() {
+        final EditText input = new EditText(getContext());
+        input.setHint("输入要发送到后屏的喊话文字");
+        input.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+        input.setSingleLine(false);
+        input.setMinLines(2);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        input.setPadding(28, 12, 28, 12);
+
+        new AlertDialog.Builder(getContext())
+                .setTitle("喊话文字")
+                .setView(input)
+                .setPositiveButton("发送", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        String text = input.getText() == null ? "" : input.getText().toString().trim();
+                        if (text.length() == 0) {
+                            Toast.makeText(getContext(), "喊话文字不能为空", Toast.LENGTH_SHORT).show();
+                            return;
+                        }
+                        sendMikuTextShortcut(text, "喊话文字");
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
     private void openApp(String label, String pkg, String cls) {
         try {
             Intent launch = new Intent(Intent.ACTION_MAIN);
@@ -2884,12 +2986,40 @@ public class LauncherCanvasView extends View {
         final String pkg;
         final String cls;
         final Drawable icon;
+        final String type;
+        final String textPayload;
+        final String iconText;
 
         AppEntry(String label, String pkg, String cls, Drawable icon) {
+            this(label, pkg, cls, icon, "app", "", "");
+        }
+
+        AppEntry(String label, String pkg, String cls, Drawable icon, String type, String textPayload, String iconText) {
             this.label = label;
             this.pkg = pkg;
             this.cls = cls;
             this.icon = icon;
+            this.type = type == null ? "app" : type;
+            this.textPayload = textPayload == null ? "" : textPayload;
+            this.iconText = iconText == null ? "" : iconText;
+        }
+
+        static AppEntry textDisplay(String label, String type, String textPayload, String iconText) {
+            return new AppEntry(label,
+                    MikuTextDisplayNodeController.COMMON_PKG_MARKER,
+                    type,
+                    null,
+                    type,
+                    textPayload,
+                    iconText);
+        }
+
+        boolean isTextDisplayShortcut() {
+            return MikuTextDisplayNodeController.isTextDisplayCommonType(type);
+        }
+
+        boolean isShoutShortcut() {
+            return MikuTextDisplayNodeController.COMMON_TYPE_SHOUT.equals(type);
         }
     }
 }

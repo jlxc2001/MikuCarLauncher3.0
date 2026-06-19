@@ -47,6 +47,7 @@ public class DesktopSettingsActivity extends Activity {
     private TextView vehicleHookValue;
     private TextView hudBroadcastValue;
     private TextView rearAiVisionValue;
+    private TextView textDisplayNodeValue;
     private TextView dayBackgroundValue;
     private TextView nightBackgroundValue;
     private TextView nightModeValue;
@@ -246,6 +247,15 @@ public class DesktopSettingsActivity extends Activity {
             }
         });
 
+        textDisplayNodeValue = addValue(root, "快捷文字屏节点：");
+        Button textDisplayNodeSettings = addButton(root, "快捷文字屏节点设置");
+        textDisplayNodeSettings.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                startActivity(new Intent(DesktopSettingsActivity.this, MikuTextDisplayNodeSettingsActivity.class));
+            }
+        });
+
         nightModeValue = addValue(root, "夜间模式：");
         Button nightModeSettings = addButton(root, "夜间模式设置");
         nightModeSettings.setOnClickListener(new View.OnClickListener() {
@@ -425,6 +435,10 @@ public class DesktopSettingsActivity extends Activity {
         if (rearAiVisionValue != null) {
             rearAiVisionValue.setText("后置 AI 视觉节点：" + RearAiVisionController.settingsSummary(this)
                     + "\n视频流固定右半屏 1280×720，UDP 47210 / HTTP 47211");
+        }
+        if (textDisplayNodeValue != null) {
+            textDisplayNodeValue.setText("快捷文字屏节点：" + MikuTextDisplayNodeController.settingsSummary(this)
+                    + "\n4号卡片可添加快捷文字 / 喊话文字，点击后发送到后置超长条屏");
         }
         if (nightModeValue != null) {
             int sunrise = sp.getInt(NightModeHelper.PREF_SUNRISE_MIN, NightModeHelper.DEFAULT_SUNRISE_MIN);
