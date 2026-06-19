@@ -1,0 +1,907 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: transparent;
+      pointer-events: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    #stage {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: transparent;
+      pointer-events: none;
+    }
+    #msg {
+      position: fixed;
+      left: 8px;
+      top: 8px;
+      right: 8px;
+      color: rgba(255,255,255,.88);
+      background: rgba(0,0,0,.34);
+      font: 12px sans-serif;
+      padding: 6px 8px;
+      border-radius: 8px;
+      display: none;
+      pointer-events: none;
+    }
+    canvas {
+      background: transparent !important;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="msg"></div>
+<script>
+(function () {
+  const params = new URLSearchParams(location.search);
+  const modelUrl = params.get("model") || "";
+  const designW = parseFloat(params.get("dw") || "2560") || 2560;
+  const designH = parseFloat(params.get("dh") || "720") || 720;
+  const shouldClipLive2D = params.get("clip") !== "0";
+  // v62：画质倍率和帧率可在设置中调节。
+  // 画质倍率 1.0 = 当前稳定默认，2.0 = 更清晰但更吃性能。
+  const renderQuality = Math.max(0.5, Math.min(2.0, parseFloat(params.get("quality") || "1.0") || 1.0));
+  const targetFps = Math.max(15, Math.min(60, parseInt(params.get("fps") || "60", 10) || 60));
+  const isNightMode = params.get("night") === "1";
+  const nightDimAlpha = Math.max(0, Math.min(85, parseFloat(params.get("dim") || "35") || 0));
+
+  let centerX = parseFloat(params.get("cx") || "1448") || 1448;
+  let centerY = parseFloat(params.get("cy") || "420") || 420;
+  let userScale = parseFloat(params.get("scale") || "1") || 1;
+
+  const msg = document.getElementById("msg");
+  let app = null;
+  let model = null;
+  let rawModelWidth = 1;
+  let rawModelHeight = 1;
+  let motionGroups = [];
+  let motionList = [];
+  let expressionList = [];
+  let motionTimer = null;
+  let nextMotionIndex = 0;
+  let isMotionPlaying = false;
+
+  // v54：只给 Live2D 模型加遮罩，不遮挡背景、不改变底部卡片形状。
+  const live2DClipBottomDesignY = 546.5;
+  let live2DMask = null;
+
+  // v56：默认待机效果不再用整体缩放/漂浮，而是尽量模拟 ViewerEX 那种参数级待机：
+  // 眼睛随机眨眼、头部轻微看向、身体小幅摆动；只在模型无自带动作/使用注入默认动作时启用。
+  let elapsedSec = 0;
+  let nextBlinkSec = 1.2 + Math.random() * 2.5;
+  let blinkStartSec = -1;
+  let defaultIdleEnabled = false;
+  let usingDefaultMotions = false;
+  let defaultActionKind = "";
+  let defaultActionStartSec = -1;
+  let defaultActionDurationSec = 0;
+
+  function showMsg(text) {
+    console.log(text);
+    msg.textContent = text;
+    msg.style.display = "block";
+  }
+
+  function hideMsg() {
+    msg.style.display = "none";
+  }
+
+  function loadScript(src) {
+    return new Promise(function(resolve, reject) {
+      const s = document.createElement("script");
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = function() { reject(new Error("load script failed: " + src)); };
+      document.head.appendChild(s);
+    });
+  }
+
+  async function loadScriptAny(list) {
+    let last = null;
+    for (const src of list) {
+      try {
+        await loadScript(src);
+        return src;
+      } catch (e) {
+        last = e;
+      }
+    }
+    throw last || new Error("script load failed");
+  }
+
+  function stageScaleX() {
+    return window.innerWidth / designW;
+  }
+
+  function stageScaleY() {
+    return window.innerHeight / designH;
+  }
+
+  function targetModelHeightPx() {
+    return 390 * stageScaleY() * userScale;
+  }
+
+  function applyLayout() {
+    if (!model) return;
+
+    const targetHeight = targetModelHeightPx();
+    let baseScale = targetHeight / Math.max(1, rawModelHeight);
+
+    if (!isFinite(baseScale) || baseScale <= 0) {
+      baseScale = 1;
+    }
+
+    model.scale.set(baseScale);
+    model.x = centerX * stageScaleX();
+    model.y = centerY * stageScaleY();
+  }
+
+  function updateLive2DMask() {
+    const stage = document.getElementById("stage");
+
+    if (!shouldClipLive2D) {
+      if (stage) {
+        stage.style.height = "100vh";
+        stage.style.overflow = "hidden";
+      }
+      if (model) {
+        model.mask = null;
+      }
+      if (live2DMask) {
+        live2DMask.clear();
+      }
+      return;
+    }
+
+    if (!app || !model || !window.PIXI) return;
+
+    const clipBottom = live2DClipBottomDesignY * stageScaleY();
+
+    // 第一层：CSS 裁切 WebView 内的 stage。这个比 Pixi mask 更稳定，
+    // 可以避免 WebView / Canvas 硬件加速时 Pixi mask 偶发不生效。
+    if (stage) {
+      stage.style.height = Math.max(0, clipBottom) + "px";
+      stage.style.overflow = "hidden";
+    }
+
+    // 第二层：Pixi mask 只作用于模型本身，不会遮挡 App 背景和卡片。
+    if (!live2DMask) {
+      live2DMask = new PIXI.Graphics();
+      app.stage.addChild(live2DMask);
+    }
+
+    model.mask = live2DMask;
+    live2DMask.clear();
+    live2DMask.beginFill(0xffffff, 1);
+    live2DMask.drawRect(0, 0, window.innerWidth, Math.max(0, clipBottom));
+    live2DMask.endFill();
+  }
+
+  function applyNightDimFilter() {
+    if (!app || !app.view) return;
+
+    // 只作用于 Live2D 的透明 canvas。透明区域仍然透明，不会压暗 App 背景图和功能卡片。
+    if (isNightMode && nightDimAlpha > 0) {
+      const brightness = Math.max(0.15, 1 - nightDimAlpha / 100.0);
+      app.view.style.filter = "brightness(" + Math.round(brightness * 100) + "%)";
+      app.view.style.webkitFilter = app.view.style.filter;
+    } else {
+      app.view.style.filter = "none";
+      app.view.style.webkitFilter = "none";
+    }
+  }
+
+  function sendAndroidHeartbeat(type) {
+    try {
+      if (window.MikuLive2DAndroid && window.MikuLive2DAndroid.heartbeat) {
+        window.MikuLive2DAndroid.heartbeat(type || "tick");
+      }
+    } catch (e) {}
+  }
+
+  window.__mikuLive2DForceHeartbeat = function() {
+    sendAndroidHeartbeat("force");
+  };
+
+  window.__mikuLive2DUpdate = function(cx, cy, scale) {
+    centerX = parseFloat(cx) || centerX;
+    centerY = parseFloat(cy) || centerY;
+    userScale = parseFloat(scale) || userScale;
+    applyLayout();
+  };
+
+  window.__mikuLive2DRelayout = function() {
+    applyLayout();
+    updateLive2DMask();
+  };
+
+  window.__mikuLive2DNextMotion = function() {
+    playNextMotionAndExpression();
+  };
+
+  function pickRandom(arr) {
+    if (!arr || arr.length === 0) return null;
+    return arr[Math.floor(Math.random() * arr.length)];
+  }
+
+  function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
+  }
+
+  function getModelJson() {
+    try {
+      const settings = model && model.internalModel && model.internalModel.settings;
+      return (settings && settings.json) ||
+             (settings && settings._json) ||
+             (settings && settings._object) ||
+             null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function getCoreModel() {
+    try {
+      return model && model.internalModel && model.internalModel.coreModel;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function findParamIndex(core, id) {
+    try {
+      if (core && typeof core.getParameterIndex === "function") {
+        const idx = core.getParameterIndex(id);
+        if (typeof idx === "number" && idx >= 0) {
+          return idx;
+        }
+      }
+    } catch (e) {}
+    return -1;
+  }
+
+  function setParam(id, value) {
+    const core = getCoreModel();
+    if (!core) return false;
+
+    const idx = findParamIndex(core, id);
+    if (idx >= 0) {
+      try {
+        if (typeof core.setParameterValueByIndex === "function") {
+          core.setParameterValueByIndex(idx, value);
+          return true;
+        }
+      } catch (e) {}
+    }
+
+    // 某些运行库没有 getParameterIndex，只能按 id 设置。
+    try {
+      if (idx < 0 && typeof core.setParameterValueById === "function" && typeof core.getParameterIndex !== "function") {
+        core.setParameterValueById(id, value);
+        return true;
+      }
+    } catch (e) {}
+
+    return false;
+  }
+
+  function addParam(id, value) {
+    const core = getCoreModel();
+    if (!core) return false;
+
+    const idx = findParamIndex(core, id);
+    if (idx >= 0) {
+      try {
+        if (typeof core.addParameterValueById === "function") {
+          core.addParameterValueById(id, value);
+          return true;
+        }
+      } catch (e) {}
+
+      try {
+        if (typeof core.getParameterValueByIndex === "function" && typeof core.setParameterValueByIndex === "function") {
+          const current = core.getParameterValueByIndex(idx);
+          core.setParameterValueByIndex(idx, current + value);
+          return true;
+        }
+      } catch (e) {}
+    }
+
+    return false;
+  }
+
+  function setParamAny(ids, value) {
+    for (const id of ids) {
+      if (setParam(id, value)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function addParamAny(ids, value) {
+    for (const id of ids) {
+      if (addParam(id, value)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function getMotionCandidates() {
+    const settings = model && model.internalModel && model.internalModel.settings;
+    const json = getModelJson();
+    const candidates = [];
+    try {
+      if (settings && settings.motions) candidates.push(settings.motions);
+      if (json && json.FileReferences && json.FileReferences.Motions) candidates.push(json.FileReferences.Motions);
+      if (json && json.motions) candidates.push(json.motions);
+    } catch (e) {}
+    return candidates;
+  }
+
+  function extractMotionGroups() {
+    const groups = [];
+    const candidates = getMotionCandidates();
+
+    for (const motions of candidates) {
+      for (const key in motions) {
+        if (!Object.prototype.hasOwnProperty.call(motions, key)) continue;
+        const count = motionCountFromValue(motions[key]);
+        if (count > 0 && groups.indexOf(key) < 0) {
+          groups.push(key);
+        }
+      }
+    }
+
+    const preferred = ["Idle", "idle", "Idling", "idling", "TapBody", "tap_body", "Tap", "tap", "Flick", "flick"];
+    const result = [];
+    for (const p of preferred) {
+      if (groups.indexOf(p) >= 0 && result.indexOf(p) < 0) result.push(p);
+    }
+    for (const g of groups) {
+      if (result.indexOf(g) < 0) result.push(g);
+    }
+    return result;
+  }
+
+  function motionCountFromValue(value) {
+    if (Array.isArray(value)) return Math.max(0, value.length);
+    if (value && typeof value === "object") return Math.max(0, Object.keys(value).length);
+    if (typeof value === "string") return 1;
+    return 0;
+  }
+
+  function motionCountInGroup(group) {
+    const candidates = getMotionCandidates();
+    for (const motions of candidates) {
+      if (!motions || !Object.prototype.hasOwnProperty.call(motions, group)) continue;
+      return Math.max(1, motionCountFromValue(motions[group]));
+    }
+    return 1;
+  }
+
+  function valueHasDefaultMotionFile(value) {
+    if (!value) return false;
+    if (typeof value === "string") {
+      return value.indexOf("motions_default") >= 0 || value.indexOf("miku_default") >= 0;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (valueHasDefaultMotionFile(item)) return true;
+      }
+      return false;
+    }
+    if (typeof value === "object") {
+      for (const k in value) {
+        if (!Object.prototype.hasOwnProperty.call(value, k)) continue;
+        if (k === "File" || k === "file") {
+          if (valueHasDefaultMotionFile(String(value[k]))) return true;
+        }
+        if (valueHasDefaultMotionFile(value[k])) return true;
+      }
+    }
+    return false;
+  }
+
+  function containsDefaultMotionFiles() {
+    const candidates = getMotionCandidates();
+    for (const motions of candidates) {
+      for (const key in motions) {
+        if (!Object.prototype.hasOwnProperty.call(motions, key)) continue;
+        if (valueHasDefaultMotionFile(motions[key])) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function buildMotionList() {
+    const list = [];
+    motionGroups = extractMotionGroups();
+
+    for (const group of motionGroups) {
+      const count = motionCountInGroup(group);
+      for (let i = 0; i < count; i++) {
+        list.push({ group: group, index: i });
+      }
+    }
+
+    for (let i = list.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = list[i];
+      list[i] = list[j];
+      list[j] = t;
+    }
+
+    motionList = list;
+    nextMotionIndex = 0;
+  }
+
+  function extractExpressions() {
+    const result = [];
+    const json = getModelJson();
+    const settings = model && model.internalModel && model.internalModel.settings;
+
+    try {
+      const candidates = [];
+      if (settings && settings.expressions) candidates.push(settings.expressions);
+      if (json && json.FileReferences && json.FileReferences.Expressions) candidates.push(json.FileReferences.Expressions);
+      if (json && json.expressions) candidates.push(json.expressions);
+
+      for (const expressions of candidates) {
+        if (Array.isArray(expressions)) {
+          for (let i = 0; i < expressions.length; i++) {
+            const item = expressions[i];
+            if (item && typeof item === "object") {
+              const name = item.Name || item.name || item.File || item.file || String(i);
+              result.push({ index: i, name: name });
+            } else {
+              result.push({ index: i, name: String(i) });
+            }
+          }
+        } else if (expressions && typeof expressions === "object") {
+          let idx = 0;
+          for (const key in expressions) {
+            if (!Object.prototype.hasOwnProperty.call(expressions, key)) continue;
+            result.push({ index: idx, name: key });
+            idx++;
+          }
+        }
+      }
+    } catch (e) {}
+
+    const dedup = [];
+    const seen = {};
+    for (const e of result) {
+      const k = String(e.name) + "#" + String(e.index);
+      if (!seen[k]) {
+        seen[k] = true;
+        dedup.push(e);
+      }
+    }
+    return dedup;
+  }
+
+  async function tryStartMotion(group, index) {
+    if (!model || !group) return false;
+
+    try {
+      await model.motion(group, index);
+      return true;
+    } catch (e) {}
+
+    try {
+      await model.motion(group);
+      return true;
+    } catch (e) {}
+
+    try {
+      const manager = model.internalModel && model.internalModel.motionManager;
+      if (manager && manager.startMotion) {
+        manager.startMotion(group, index || 0, 2);
+        return true;
+      }
+    } catch (e) {}
+
+    try {
+      const manager = model.internalModel && model.internalModel.motionManager;
+      if (manager && manager.startRandomMotion) {
+        manager.startRandomMotion(group, 2);
+        return true;
+      }
+    } catch (e) {}
+
+    return false;
+  }
+
+  async function applyRandomExpression() {
+    if (!model || expressionList.length === 0) {
+      return false;
+    }
+
+    const exp = pickRandom(expressionList);
+    if (!exp) return false;
+
+    try {
+      if (typeof model.expression === "function") {
+        await model.expression(exp.index);
+        return true;
+      }
+    } catch (e) {}
+
+    try {
+      if (typeof model.expression === "function") {
+        await model.expression(exp.name);
+        return true;
+      }
+    } catch (e) {}
+
+    try {
+      const manager = model.internalModel && model.internalModel.motionManager;
+      const expressionManager = manager && manager.expressionManager;
+      if (expressionManager && expressionManager.setExpression) {
+        expressionManager.setExpression(exp.index);
+        return true;
+      }
+    } catch (e) {}
+
+    try {
+      const manager = model.internalModel && model.internalModel.motionManager;
+      const expressionManager = manager && manager.expressionManager;
+      if (expressionManager && expressionManager.setRandomExpression) {
+        expressionManager.setRandomExpression();
+        return true;
+      }
+    } catch (e) {}
+
+    return false;
+  }
+
+  async function playMotionItem(item) {
+    if (!item || isMotionPlaying) {
+      return false;
+    }
+
+    isMotionPlaying = true;
+    const ok = await tryStartMotion(item.group, item.index);
+    isMotionPlaying = false;
+    return ok;
+  }
+
+  async function playRandomMotionOnce() {
+    if (!model || motionList.length === 0) {
+      return false;
+    }
+
+    const item = pickRandom(motionList);
+    const ok = await playMotionItem(item);
+    await applyRandomExpression();
+    if (usingDefaultMotions) {
+      triggerDefaultAction(pickRandom(["smile", "nod", "look"]));
+    }
+    return ok;
+  }
+
+  async function playNextMotionAndExpression() {
+    if (!model) {
+      return;
+    }
+
+    if (usingDefaultMotions) {
+      const sequence = ["smile", "nod", "look", "blink"];
+      triggerDefaultAction(sequence[nextMotionIndex % sequence.length]);
+      nextMotionIndex++;
+      await applyRandomExpression();
+      return;
+    }
+
+    if (motionList.length === 0) {
+      triggerDefaultAction(pickRandom(["smile", "nod", "look", "blink"]));
+      await applyRandomExpression();
+      return;
+    }
+
+    if (nextMotionIndex >= motionList.length) {
+      buildMotionList();
+    }
+
+    const item = motionList[nextMotionIndex];
+    nextMotionIndex++;
+    await playMotionItem(item);
+    await applyRandomExpression();
+  }
+
+  function triggerDefaultAction(kind) {
+    defaultActionKind = kind || "smile";
+    defaultActionStartSec = elapsedSec;
+
+    if (defaultActionKind === "blink") {
+      blinkStartSec = elapsedSec;
+      defaultActionDurationSec = 0.55;
+    } else if (defaultActionKind === "nod") {
+      defaultActionDurationSec = 1.9;
+    } else if (defaultActionKind === "look") {
+      defaultActionDurationSec = 2.4;
+    } else {
+      defaultActionDurationSec = 2.2;
+    }
+  }
+
+  function smooth01(x) {
+    x = clamp(x, 0, 1);
+    return x * x * (3 - 2 * x);
+  }
+
+  function pulse(progress) {
+    progress = clamp(progress, 0, 1);
+    return Math.sin(progress * Math.PI);
+  }
+
+  function updateBlink() {
+    if (elapsedSec >= nextBlinkSec && blinkStartSec < 0) {
+      blinkStartSec = elapsedSec;
+    }
+
+    if (blinkStartSec >= 0) {
+      const d = elapsedSec - blinkStartSec;
+      let open = 1;
+
+      if (d < 0.055) {
+        open = 1 - d / 0.055;
+      } else if (d < 0.145) {
+        open = 0;
+      } else if (d < 0.25) {
+        open = (d - 0.145) / 0.105;
+      } else {
+        blinkStartSec = -1;
+        nextBlinkSec = elapsedSec + 2.4 + Math.random() * 4.2;
+        open = 1;
+      }
+
+      open = clamp(open, 0, 1);
+      setParamAny(["ParamEyeLOpen", "PARAM_EYE_L_OPEN"], open);
+      setParamAny(["ParamEyeROpen", "PARAM_EYE_R_OPEN"], open);
+    }
+  }
+
+  function updateDefaultIdle() {
+    if (!defaultIdleEnabled) {
+      updateBlink();
+      return;
+    }
+
+    const t = elapsedSec;
+    let angleX = Math.sin(t * 0.65) * 5.5 + Math.sin(t * 0.19) * 2.0;
+    let angleY = Math.sin(t * 0.48 + 1.7) * 2.8;
+    let angleZ = Math.sin(t * 0.42 + 0.4) * 2.2;
+    let bodyX = Math.sin(t * 0.52 + 1.1) * 3.2;
+    let breath = 0.5 + Math.sin(t * 1.05) * 0.35;
+
+    if (defaultActionStartSec >= 0) {
+      const p = clamp((elapsedSec - defaultActionStartSec) / Math.max(0.01, defaultActionDurationSec), 0, 1);
+      const e = pulse(p);
+
+      if (defaultActionKind === "nod") {
+        angleY += Math.sin(p * Math.PI * 4) * 8 * (1 - p);
+        bodyX += Math.sin(p * Math.PI * 2) * 4 * (1 - p);
+      } else if (defaultActionKind === "look") {
+        angleX += Math.sin(p * Math.PI * 2) * 11 * (1 - p * 0.25);
+        angleZ += Math.sin(p * Math.PI * 2) * 3;
+      } else if (defaultActionKind === "smile") {
+        setParamAny(["ParamMouthForm", "PARAM_MOUTH_FORM"], 0.8 * e);
+        setParamAny(["ParamMouthOpenY", "PARAM_MOUTH_OPEN_Y"], 0.18 + 0.16 * e);
+        setParamAny(["ParamEyeSmile", "PARAM_EYE_SMILE"], 0.75 * e);
+      }
+
+      if (p >= 1) {
+        defaultActionStartSec = -1;
+        defaultActionKind = "";
+      }
+    }
+
+    setParamAny(["ParamAngleX", "PARAM_ANGLE_X"], angleX);
+    setParamAny(["ParamAngleY", "PARAM_ANGLE_Y"], angleY);
+    setParamAny(["ParamAngleZ", "PARAM_ANGLE_Z"], angleZ);
+    setParamAny(["ParamBodyAngleX", "PARAM_BODY_ANGLE_X"], bodyX);
+    setParamAny(["ParamBreath", "PARAM_BREATH"], breath);
+
+    // 常见模型的头发/服装辅助参数；没有这些参数时会自动忽略。
+    addParamAny(["ParamHairFront", "PARAM_HAIR_FRONT"], Math.sin(t * 1.15) * 0.08);
+    addParamAny(["ParamHairBack", "PARAM_HAIR_BACK"], Math.sin(t * 0.92 + 1.3) * 0.08);
+    addParamAny(["ParamBustX", "PARAM_BUST_X"], Math.sin(t * 0.55) * 0.02);
+    addParamAny(["ParamBustY", "PARAM_BUST_Y"], Math.sin(t * 0.74) * 0.02);
+
+    // 兜底的容器级动作：幅度很小，只在默认动作模式启用。
+    // 这样某些模型没有 ParamAngleX / ParamBodyAngleX 时，也能看到类似 ViewerEX 的轻微待机。
+    let extraX = Math.sin(t * 0.42 + 0.5) * 5.0;
+    let extraY = Math.sin(t * 0.58 + 1.2) * 1.8;
+    let extraRot = angleZ * 0.0024;
+
+    if (defaultActionStartSec >= 0) {
+      const p2 = clamp((elapsedSec - defaultActionStartSec) / Math.max(0.01, defaultActionDurationSec), 0, 1);
+      const e2 = pulse(p2);
+      if (defaultActionKind === "look") {
+        extraX += Math.sin(p2 * Math.PI * 2) * 10.0 * (1 - p2 * 0.2);
+      } else if (defaultActionKind === "nod") {
+        extraY += Math.sin(p2 * Math.PI * 4) * 5.0 * (1 - p2);
+      } else if (defaultActionKind === "smile") {
+        extraRot += Math.sin(p2 * Math.PI) * 0.006;
+      }
+    }
+
+    model.x = centerX * stageScaleX() + extraX * stageScaleX();
+    model.y = centerY * stageScaleY() + extraY * stageScaleY();
+    model.rotation = extraRot;
+
+    updateBlink();
+  }
+
+  function startRandomMotionLoop() {
+    buildMotionList();
+    expressionList = extractExpressions();
+    usingDefaultMotions = containsDefaultMotionFiles();
+    defaultIdleEnabled = usingDefaultMotions || motionList.length === 0;
+
+    console.log("Live2D motion groups:", motionGroups.join(", "));
+    console.log("Live2D motion count:", motionList.length);
+    console.log("Live2D expression count:", expressionList.length);
+    console.log("Live2D using default motions:", usingDefaultMotions);
+
+    if (motionList.length > 0 && !usingDefaultMotions) {
+      playRandomMotionOnce();
+    } else {
+      triggerDefaultAction("smile");
+    }
+
+    function scheduleNext() {
+      if (motionTimer) {
+        clearTimeout(motionTimer);
+      }
+
+      const delay = defaultIdleEnabled
+              ? (8500 + Math.floor(Math.random() * 6500))
+              : (6000 + Math.floor(Math.random() * 6000));
+
+      motionTimer = setTimeout(async function() {
+        if (defaultIdleEnabled) {
+          triggerDefaultAction(pickRandom(["smile", "nod", "look", "blink"]));
+          await applyRandomExpression();
+        } else {
+          await playRandomMotionOnce();
+        }
+        scheduleNext();
+      }, delay);
+    }
+
+    scheduleNext();
+  }
+
+  async function main() {
+    if (!modelUrl) {
+      showMsg("Live2D model path is empty");
+      return;
+    }
+
+    await loadScriptAny([
+      "file:///android_asset/live2d/runtime/pixi.min.js",
+      "file:///sdcard/MikuCarLauncher/live2d/runtime/pixi.min.js",
+      "https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js",
+      "https://unpkg.com/pixi.js@6.5.10/dist/browser/pixi.min.js"
+    ]);
+
+    try {
+      await loadScriptAny([
+        "file:///android_asset/live2d/runtime/live2d.min.js",
+        "file:///sdcard/MikuCarLauncher/live2d/runtime/live2d.min.js",
+        "https://cdn.jsdelivr.net/gh/dylanNew/live2d/webgl/Live2D/lib/live2d.min.js"
+      ]);
+    } catch (e) {
+      console.log("Cubism 2 runtime is not loaded", e);
+    }
+
+    await loadScriptAny([
+      "file:///android_asset/live2d/runtime/live2dcubismcore.min.js",
+      "file:///sdcard/MikuCarLauncher/live2d/runtime/live2dcubismcore.min.js",
+      "https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"
+    ]);
+
+    await loadScriptAny([
+      "file:///android_asset/live2d/runtime/pixi-live2d-display.min.js",
+      "file:///android_asset/live2d/runtime/index.min.js",
+      "file:///sdcard/MikuCarLauncher/live2d/runtime/pixi-live2d-display.min.js",
+      "file:///sdcard/MikuCarLauncher/live2d/runtime/index.min.js",
+      "https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/index.min.js",
+      "https://unpkg.com/pixi-live2d-display@0.4.0/dist/index.min.js"
+    ]);
+
+    if (!window.PIXI || !PIXI.live2d || !PIXI.live2d.Live2DModel) {
+      throw new Error("Live2D runtime is not ready");
+    }
+
+    const baseDeviceRatio = window.devicePixelRatio || 1;
+    const rendererResolution = Math.max(0.5, Math.min(3.0, baseDeviceRatio * renderQuality));
+
+    app = new PIXI.Application({
+      view: document.createElement("canvas"),
+      width: window.innerWidth,
+      height: window.innerHeight,
+      transparent: true,
+      autoDensity: true,
+      resolution: rendererResolution,
+      antialias: renderQuality >= 0.9
+    });
+
+    try {
+      app.ticker.maxFPS = targetFps;
+      app.ticker.minFPS = Math.min(12, targetFps);
+    } catch (e) {}
+
+    const stage = document.getElementById("stage");
+    stage.innerHTML = "";
+    stage.appendChild(app.view);
+    applyNightDimFilter();
+
+    const Live2DModel = PIXI.live2d.Live2DModel;
+    model = await Live2DModel.from(modelUrl, {
+      autoInteract: false,
+      autoUpdate: true
+    });
+
+    hideMsg();
+    app.stage.addChild(model);
+
+    try {
+      if (model.anchor) model.anchor.set(0.5, 0.62);
+    } catch (e) {}
+
+    rawModelWidth = Math.max(1, model.width || 1);
+    rawModelHeight = Math.max(1, model.height || 1);
+
+    applyLayout();
+    updateLive2DMask();
+    sendAndroidHeartbeat("loaded");
+
+    window.setInterval(function() {
+      sendAndroidHeartbeat("tick");
+    }, 2000);
+
+    window.addEventListener("resize", function() {
+      app.renderer.resize(window.innerWidth, window.innerHeight);
+      applyLayout();
+      updateLive2DMask();
+      applyNightDimFilter();
+    });
+
+    startRandomMotionLoop();
+
+    app.ticker.add(function(delta) {
+      elapsedSec += delta / 60.0;
+      // 放在模型自身 update 后做参数覆盖，这样眨眼/默认待机更容易生效。
+      updateDefaultIdle();
+    });
+  }
+
+  main().catch(function(e) {
+    sendAndroidHeartbeat("error");
+    showMsg("Live2D加载失败：" + (e && e.message ? e.message : e));
+    document.getElementById("stage").innerHTML = "";
+  });
+})();
+</script>
+</body>
+</html>

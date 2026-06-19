@@ -1,0 +1,85 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.jlxc.mikucarlauncher'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.jlxc.mikucarlauncher'
+        minSdk 21
+        targetSdk 28
+        versionCode 73
+        versionName '0.7.2.1-rear-ai-vision-node'
+    }
+
+    // GitHub 网页上传不会自动删除旧文件。
+    // 如果仓库里残留旧版 a4ldashboard 代码，会因为缺少 ICarInfoService 编译失败。
+    // 这里仅排除旧代码目录，不删除任何素材，不改变当前 UI。
+    sourceSets {
+        main {
+            java {
+                exclude 'com/jlxc/a4ldashboard/**'
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+
+// v50: 编译时把 Live2D Web 运行库下载并打包进 APK assets，车机运行时不需要联网。
+// 如果你已经手动把这些 JS 放到 app/src/main/assets/live2d/runtime/，任务会直接复用本地文件。
+tasks.register('prepareOfflineLive2DRuntime') {
+    doLast {
+        def runtimeDir = file('src/main/assets/live2d/runtime')
+        if (!runtimeDir.exists()) {
+            runtimeDir.mkdirs()
+        }
+
+        def libs = [
+                'pixi.min.js'                  : 'https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js',
+                'pixi-live2d-display.min.js'   : 'https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/index.min.js',
+                'live2dcubismcore.min.js'      : 'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js',
+                'live2d.min.js'                : 'https://cdn.jsdelivr.net/gh/dylanNew/live2d/webgl/Live2D/lib/live2d.min.js'
+        ]
+
+        libs.each { fileName, urlText ->
+            def outFile = new File(runtimeDir, fileName)
+            if (outFile.exists() && outFile.length() > 1024) {
+                println "Live2D runtime exists: ${fileName}"
+                return
+            }
+
+            println "Downloading Live2D runtime: ${fileName}"
+            try {
+                new URL(urlText).withInputStream { input ->
+                    outFile.withOutputStream { output ->
+                        output << input
+                    }
+                }
+                if (!outFile.exists() || outFile.length() <= 1024) {
+                    throw new GradleException("Downloaded file is too small: ${fileName}")
+                }
+            } catch (Throwable t) {
+                throw new GradleException(
+                        "无法下载 Live2D 离线运行库 ${fileName}。你也可以手动下载后放到 app/src/main/assets/live2d/runtime/。URL: ${urlText}",
+                        t
+                )
+            }
+        }
+    }
+}
+
+afterEvaluate {
+    tasks.matching { task ->
+        task.name.startsWith('merge') && task.name.endsWith('Assets')
+    }.configureEach {
+        dependsOn tasks.named('prepareOfflineLive2DRuntime')
+    }
+}
