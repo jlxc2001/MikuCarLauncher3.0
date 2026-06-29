@@ -756,3 +756,18 @@ adb shell am broadcast -a com.autonavi.plus.closemap
   - 设置位置为“快捷文字”：可自定义卡片显示名称、发送文字、图标文字/Emoji。
   - 设置位置为“喊话文字”：点击后弹出输入框，确认后把输入内容发送到后置文字屏。
 - 不修改接收端的显示逻辑；文字最大化、居中、超长滚动由 `com.jlxc.mikutextdisplay` 自行处理。
+
+
+## V72.1 / 3.0 高德 HOME 与冷启动修复
+- 修复在 Launcher 首页再次按 HOME 时，高德悬浮窗被误关闭的问题。
+- HOME 键在首页触发时加入短暂保护窗口，瞬时失焦 / 重入不再发送 closemap。
+- 调整高德冷启动兼容逻辑：不再主动打开 com.autonavi.amapautoys 的前台 Activity。
+- 冷启动时仅被动补发 showmap 广播，避免开机后出现“Launcher → 高德 → Launcher → 高德”的前台回弹。
+- 如果高德悬浮版完全没有静态 Receiver，仍需要在高德端加入静态广播接收器才能真正后台冷启动；Launcher 端不会再为了唤醒而抢前台。
+
+
+## MikuCarLauncher3.0 - V0.7.3.2 修复
+- 修复 Live2D 偶发不显示：首页恢复时强制恢复 WebView 计时器、置为可见，并加入延迟健康检查；若心跳异常会自动 hardReload。
+- 修复首页重复按 HOME / 实体 HOME 键导致高德悬浮窗被误关闭：HOME 瞬时保护窗口延长到 8 秒，并区分主动打开外部 App 与 HOME 重入。
+- 新增高德首次启动前台预热：冷启动时可先打开 com.autonavi.amapautoys，默认等待 5 秒后再回到 MikuCarLauncher；延迟可在“1号卡片悬浮高德设置”中修改，范围 0~30 秒。
+- 6号天气卡片向右拉长：右边距调整为约 20px，与 1号卡片距离左侧项目栏的间距一致。

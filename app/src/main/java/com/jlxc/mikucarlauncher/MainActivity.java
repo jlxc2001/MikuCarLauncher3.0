@@ -24,6 +24,7 @@ import android.widget.Toast;
 
 public class MainActivity extends Activity {
     public static final String PREFS = "miku_car_launcher_settings";
+    private static boolean sAmapColdStartWarmupDone = false;
     public static final String PREF_CARD1_WIDGET_ID = "card1_widget_id";
     public static final int APPWIDGET_HOST_ID = 1001;
 
@@ -56,6 +57,10 @@ public class MainActivity extends Activity {
     private boolean pendingLive2DReload = false;
     private boolean isActivityResumed = false;
     private boolean hasWindowFocusNow = false;
+    private long keepAmapOnHomeKeyUntilMs = 0L;
+    private long amapColdStartWarmupUntilMs = 0L;
+    private long explicitExternalLaunchUntilMs = 0L;
+    private boolean pendingLive2DHealthCheck = false;
     private BroadcastReceiver homeKeyReceiver;
 
     @Override
@@ -164,6 +169,7 @@ public class MainActivity extends Activity {
 
         setContentView(rootLayout);
         registerHomeKeyReceiver();
+        maybeStartAmapColdStartWarmup();
 
         rootLayout.post(new Runnable() {
             @Override
@@ -250,11 +256,83 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void markExplicitExternalLaunch() {
+        explicitExternalLaunchUntilMs = System.currentTimeMillis() + 5000L;
+    }
+
+    private void maybeStartAmapColdStartWarmup() {
+        if (sAmapColdStartWarmupDone || rootLayout == null) {
+            return;
+        }
+        SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+        if (!sp.getBoolean(AmapFloatingCardController.PREF_AMAP_COLD_START_FRONT_WARMUP_ENABLED, true)) {
+            return;
+        }
+        if (!AmapFloatingCardController.isAmapFloatingInstalled(this)) {
+            return;
+        }
+        Intent launchIntent;
+        try {
+            launchIntent = getPackageManager().getLaunchIntentForPackage(AmapFloatingCardController.AMAP_FLOATING_PACKAGE);
+        } catch (Throwable t) {
+            launchIntent = null;
+        }
+        if (launchIntent == null) {
+            return;
+        }
+
+        int delayMs = sp.getInt(
+                AmapFloatingCardController.PREF_AMAP_COLD_START_RETURN_DELAY_MS,
+                AmapFloatingCardController.DEFAULT_COLD_START_RETURN_DELAY_MS);
+        delayMs = Math.max(0, Math.min(30000, delayMs));
+
+        sAmapColdStartWarmupDone = true;
+        amapColdStartWarmupUntilMs = System.currentTimeMillis() + delayMs + 3000L;
+        keepAmapOnHomeKeyUntilMs = Math.max(keepAmapOnHomeKeyUntilMs, amapColdStartWarmupUntilMs);
+
+        try {
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(launchIntent);
+        } catch (Throwable ignored) {
+            return;
+        }
+
+        rootLayout.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                bringLauncherBackAfterAmapWarmup();
+            }
+        }, delayMs);
+    }
+
+    private void bringLauncherBackAfterAmapWarmup() {
+        try {
+            Intent back = new Intent(this, MainActivity.class);
+            back.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            startActivity(back);
+        } catch (Throwable ignored) {
+        }
+        if (rootLayout != null) {
+            rootLayout.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    showHomePage(false);
+                    updateLive2DVisibility();
+                    updateAmapFloatingCardVisibility();
+                }
+            }, 500L);
+        }
+    }
+
     private boolean launchPackage(String pkg) {
         try {
             Intent intent = getPackageManager().getLaunchIntentForPackage(pkg);
             if (intent == null) return false;
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            markExplicitExternalLaunch();
             startActivity(intent);
             return true;
         } catch (Throwable t) {
@@ -267,6 +345,7 @@ public class MainActivity extends Activity {
             Intent intent = new Intent();
             intent.setComponent(new ComponentName(pkg, cls));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            markExplicitExternalLaunch();
             startActivity(intent);
             return true;
         } catch (Throwable t) {
@@ -282,13 +361,41 @@ public class MainActivity extends Activity {
             return;
         }
 
-        live2DView.applySettings();
-
         boolean shouldShow = launcherView.getActiveIndex() == 0 && live2DView.isLive2DEnabled();
-        live2DView.setVisibility(shouldShow ? View.VISIBLE : View.GONE);
-        if (shouldShow && !live2DView.isLive2DHealthy()) {
-            scheduleLive2DReloadIfHome(false, 300L);
+        if (!shouldShow) {
+            live2DView.setVisibility(View.GONE);
+            live2DView.applySettings();
+            return;
         }
+
+        live2DView.setVisibility(View.VISIBLE);
+        live2DView.resumeLive2D();
+        live2DView.applySettings();
+        scheduleLive2DHealthCheck();
+    }
+
+    private void scheduleLive2DHealthCheck() {
+        if (rootLayout == null || live2DView == null || pendingLive2DHealthCheck) {
+            return;
+        }
+        pendingLive2DHealthCheck = true;
+        rootLayout.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                pendingLive2DHealthCheck = false;
+                if (rootLayout == null || live2DView == null || !isHomePage() || !live2DView.isLive2DEnabled()) {
+                    return;
+                }
+                live2DView.setVisibility(View.VISIBLE);
+                live2DView.resumeLive2D();
+                if (!live2DView.isLive2DHealthy()) {
+                    live2DView.hardReloadLive2D();
+                    lastLive2DReloadAt = System.currentTimeMillis();
+                } else {
+                    live2DView.applySettings();
+                }
+            }
+        }, 13500L);
     }
 
     private void updateAmapFloatingCardVisibility() {
@@ -329,10 +436,32 @@ public class MainActivity extends Activity {
     }
 
     private boolean shouldShowAmapFloatingCardOnHome() {
-        return isActivityResumed
-                && hasWindowFocusNow
-                && launcherView != null
-                && launcherView.getActiveIndex() == 0;
+        boolean homePage = launcherView != null && launcherView.getActiveIndex() == 0;
+        if (!homePage) {
+            return false;
+        }
+        return (isActivityResumed && hasWindowFocusNow)
+                || shouldKeepAmapDuringHomeKeyTransient()
+                || shouldKeepAmapDuringColdStartWarmup();
+    }
+
+    private void markHomeKeyTransientForAmap() {
+        if (isHomePage()) {
+            // 部分车机实体 HOME 键会造成较长的瞬时失焦/重入，保护时间加长，避免首页悬浮高德被误关。
+            keepAmapOnHomeKeyUntilMs = System.currentTimeMillis() + 8000L;
+        }
+    }
+
+    private boolean shouldKeepAmapDuringHomeKeyTransient() {
+        return isHomePage() && System.currentTimeMillis() <= keepAmapOnHomeKeyUntilMs;
+    }
+
+    private boolean shouldKeepAmapDuringColdStartWarmup() {
+        return System.currentTimeMillis() <= amapColdStartWarmupUntilMs;
+    }
+
+    private boolean isExplicitExternalLaunchActive() {
+        return System.currentTimeMillis() <= explicitExternalLaunchUntilMs;
     }
 
     private void positionMapCardContainer() {
@@ -398,7 +527,8 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         // 作为默认 Launcher 时，系统 HOME 可能以新 Intent 形式拉起已有 singleTask。
-        // 不管是否带 EXTRA_GO_HOME，都回到首页，但不重建桌面、不强制重载 Live2D。
+        // 如果本来就在首页，认为这是 HOME 的瞬时重入，避免因此关闭高德悬浮窗。
+        markHomeKeyTransientForAmap();
         showHomePage(false);
     }
 
@@ -423,6 +553,7 @@ public class MainActivity extends Activity {
             live2DView.reloadLive2D();
             live2DView.setVisibility(View.VISIBLE);
             lastLive2DReloadAt = System.currentTimeMillis();
+            scheduleLive2DHealthCheck();
         }
     }
 
@@ -478,7 +609,10 @@ public class MainActivity extends Activity {
                     return;
                 }
                 String reason = intent.getStringExtra("reason");
-                if ("homekey".equals(reason) || "recentapps".equals(reason)) {
+                if ("homekey".equals(reason)) {
+                    markHomeKeyTransientForAmap();
+                    showHomePage(false);
+                } else if ("recentapps".equals(reason)) {
                     showHomePage(false);
                 }
             }
@@ -498,6 +632,14 @@ public class MainActivity extends Activity {
         } catch (Throwable ignored) {
         }
         homeKeyReceiver = null;
+    }
+
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (isHomePage() && !isExplicitExternalLaunchActive()) {
+            markHomeKeyTransientForAmap();
+        }
     }
 
     @Override
@@ -530,6 +672,7 @@ public class MainActivity extends Activity {
         // DOWN / UP 全部消费，避免部分车机在 UP 阶段继续交给系统导致回到上一个 App。
         if (event == null || event.getAction() == KeyEvent.ACTION_DOWN) {
             if (HomeKeyHelper.isHomeKey(keyCode)) {
+                markHomeKeyTransientForAmap();
                 showHomePage(false);
             } else if (HomeKeyHelper.isBackKey(keyCode)) {
                 if (!isHomePage()) {
@@ -583,8 +726,9 @@ public class MainActivity extends Activity {
         if (live2DView != null) {
             live2DView.resumeLive2D();
             live2DView.applySettings();
-            if (!live2DView.isLive2DHealthy() && isHomePage()) {
-                live2DView.reloadLive2D();
+            if (isHomePage()) {
+                live2DView.setVisibility(live2DView.isLive2DEnabled() ? View.VISIBLE : View.GONE);
+                scheduleLive2DHealthCheck();
             }
         }
         if (rearAiVisionController != null) {
@@ -614,7 +758,9 @@ public class MainActivity extends Activity {
             live2DView.pauseLive2D();
         }
         if (amapFloatingCardController != null) {
-            amapFloatingCardController.onPause();
+            if (!shouldKeepAmapDuringHomeKeyTransient() && !shouldKeepAmapDuringColdStartWarmup()) {
+                amapFloatingCardController.onPause();
+            }
         }
         if (rearAiVisionController != null) {
             rearAiVisionController.stop();

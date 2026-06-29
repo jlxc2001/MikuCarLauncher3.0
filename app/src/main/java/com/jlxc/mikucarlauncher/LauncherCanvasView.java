@@ -496,7 +496,7 @@ public class LauncherCanvasView extends View {
 
         RectF bottomLeftCard = new RectF(210f, 546.5f, 1140f, 684.5f);
         RectF bottomMiddleCard = new RectF(1158f, 546.5f, 1952f, 684.5f);
-        RectF bottomRightCard = new RectF(1970f, 546.5f, 2396f, 684.5f);
+        RectF bottomRightCard = new RectF(1970f, 546.5f, 2540f, 684.5f);
 
         float radius = 18f;
         c.drawRoundRect(leftCard, radius, radius, cardPaint);
@@ -2030,7 +2030,7 @@ public class LauncherCanvasView extends View {
                     }
                 }
 
-                RectF card6 = new RectF(1970f, 546.5f, 2396f, 684.5f);
+                RectF card6 = new RectF(1970f, 546.5f, 2540f, 684.5f);
                 if (card6.contains(x, y)) {
                     getContext().startActivity(new Intent(getContext(), WeatherSettingsActivity.class));
                     return true;

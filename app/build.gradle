@@ -11,8 +11,8 @@ android {
         applicationId 'com.jlxc.mikucarlauncher'
         minSdk 21
         targetSdk 28
-        versionCode 74
-        versionName '0.7.3.0-rear-ai-text-display-node'
+        versionCode 76
+        versionName '0.7.3.2-live2d-amap-warmup-weather-card'
     }
 
     // GitHub 网页上传不会自动删除旧文件。

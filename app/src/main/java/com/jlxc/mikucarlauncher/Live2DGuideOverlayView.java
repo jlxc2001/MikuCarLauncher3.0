@@ -48,7 +48,7 @@ public class Live2DGuideOverlayView extends View {
         drawCard(canvas, new RectF(1158f, 368.5f, 1550f, 528.5f), "3 蓝牙");
         drawCard(canvas, new RectF(210f, 546.5f, 1140f, 684.5f), "4 常用软件");
         drawCard(canvas, new RectF(1158f, 546.5f, 1952f, 684.5f), "5 车辆状态");
-        drawCard(canvas, new RectF(1970f, 546.5f, 2396f, 684.5f), "6 天气");
+        drawCard(canvas, new RectF(1970f, 546.5f, 2540f, 684.5f), "6 天气");
 
         // 用户提到的模型放置区域：用蓝色虚线框提示。
         Paint liveArea = new Paint(Paint.ANTI_ALIAS_FLAG);

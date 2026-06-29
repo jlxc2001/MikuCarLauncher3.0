@@ -1,7 +1,6 @@
 package com.jlxc.mikucarlauncher
 
 import android.app.Activity
-import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -42,6 +41,8 @@ class AmapFloatingCardController(
         const val PREF_AMAP_CARD_FORCE_WIDTH_PX = "amap_card_force_width_px"
         const val PREF_AMAP_CARD_FORCE_HEIGHT_PX = "amap_card_force_height_px"
         const val PREF_AMAP_CARD_DPI = "amap_card_dpi"
+        const val PREF_AMAP_COLD_START_FRONT_WARMUP_ENABLED = "amap_cold_start_front_warmup_enabled"
+        const val PREF_AMAP_COLD_START_RETURN_DELAY_MS = "amap_cold_start_return_delay_ms"
 
         private const val PREF_AMAP_CARD_PRESET_VERSION = "amap_card_preset_version"
         private const val CURRENT_PRESET_VERSION = 2
@@ -56,11 +57,11 @@ class AmapFloatingCardController(
         const val DEFAULT_FORCE_WIDTH_PX = 1125
         const val DEFAULT_FORCE_HEIGHT_PX = 515
         const val DEFAULT_DPI = 200
+        const val DEFAULT_COLD_START_RETURN_DELAY_MS = 5000
 
         private const val MIN_SCALE_PERCENT = 10
         private const val MAX_SCALE_PERCENT = 300
-        private const val AMAP_WAKE_RETRY_DELAY_MS = 900L
-        private const val LAUNCHER_BACK_DELAY_MS = 550L
+        private val AMAP_PASSIVE_SHOW_RETRY_DELAYS_MS = longArrayOf(350L, 900L, 1800L, 3000L)
 
 
         data class FloatingCardSettings(
@@ -173,9 +174,13 @@ class AmapFloatingCardController(
         fun getSettingsSummary(context: Context): String {
             val s = readSettings(context)
             val dpiText = if (s.dpi > 0) "${s.dpi}" else "不强制"
+            val sp = context.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
+            val warmupEnabled = sp.getBoolean(PREF_AMAP_COLD_START_FRONT_WARMUP_ENABLED, true)
+            val warmupDelay = sp.getInt(PREF_AMAP_COLD_START_RETURN_DELAY_MS, DEFAULT_COLD_START_RETURN_DELAY_MS).coerceIn(0, 30000)
+            val warmupText = if (warmupEnabled) "高德预热 ${warmupDelay / 1000f}s" else "高德预热关闭"
             return "内缩 ${s.insetDp}dp，偏移 X ${s.xOffsetPx}px / Y ${s.yOffsetPx}px，" +
                     "缩放 ${s.widthScalePercent}%×${s.heightScalePercent}%，" +
-                    "强制 ${s.forceWidthPx}×${s.forceHeightPx}px，DPI $dpiText"
+                    "强制 ${s.forceWidthPx}×${s.forceHeightPx}px，DPI $dpiText，$warmupText"
         }
 
         @JvmStatic
@@ -311,14 +316,14 @@ class AmapFloatingCardController(
             return
         }
 
-        // 有些高德共存悬浮版只在进程已启动后才注册 showmap 广播接收器。
-        // 所以首次首页显示时，如果判断高德进程可能还没运行，先轻拉起一次高德，再回到 Launcher 后补发 showmap。
-        if (!isShown && shouldWakeAmapProcessBeforeShow()) {
-            wakeAmapProcessAndRetry()
-            return
-        }
-
+        val firstShow = !isShown
         sendShowMapIfNeeded(rect, settings.dpi, false)
+
+        // 冷启动兼容：不再主动 startActivity 打开高德前台，避免“Launcher → 高德 → Launcher → 高德”回弹。
+        // 这里只做被动补发 showmap。若高德端有静态 Receiver，可被后台拉起；若没有，也不会把高德 Activity 顶到前台。
+        if (firstShow && shouldSchedulePassiveAmapShowRetries()) {
+            schedulePassiveAmapShowRetries(rect, settings.dpi)
+        }
     }
 
     private fun sendShowMapIfNeeded(rect: Rect, dpi: Int, force: Boolean) {
@@ -334,82 +339,37 @@ class AmapFloatingCardController(
         lastDpi = dpi
     }
 
-    private fun shouldWakeAmapProcessBeforeShow(): Boolean {
+    private fun shouldSchedulePassiveAmapShowRetries(): Boolean {
         if (hasTriedWakeAmapProcess || pendingWakeRetry) {
             return false
         }
-        return !isAmapProcessProbablyRunning()
+        return true
     }
 
-    private fun wakeAmapProcessAndRetry() {
+    private fun schedulePassiveAmapShowRetries(rect: Rect, dpi: Int) {
         hasTriedWakeAmapProcess = true
         pendingWakeRetry = true
-
-        // 先发一次广播：如果高德端有静态 Receiver，这次就能直接显示；如果没有，后面再补发。
-        try {
-            val settings = readInstanceSettings()
-            val rect = measureCardRect(settings)
-            if (rect.width() > 0 && rect.height() > 0) {
-                sendShowMapBroadcast(activity, rect, settings.dpi)
-            }
-        } catch (_: Throwable) {
-        }
-
-        tryLaunchAmapForProcessWarmup()
-
-        // 启动高德会让 Launcher 暂时失焦。短暂延迟后把 Launcher 拉回前台，随后首页逻辑会再次 showmap。
-        mainHandler.postDelayed({
-            bringLauncherBackToFront()
-        }, LAUNCHER_BACK_DELAY_MS)
-
-        mainHandler.postDelayed({
-            pendingWakeRetry = false
-            if (!allowShowOnHome) {
-                return@postDelayed
-            }
-            try {
-                val settings = readInstanceSettings()
-                val rect = measureCardRect(settings)
-                if (rect.width() > 0 && rect.height() > 0) {
-                    sendShowMapIfNeeded(rect, settings.dpi, true)
+        val retryRect = Rect(rect)
+        val retryDpi = dpi
+        AMAP_PASSIVE_SHOW_RETRY_DELAYS_MS.forEachIndexed { index, delayMs ->
+            mainHandler.postDelayed({
+                if (!allowShowOnHome) {
+                    if (index == AMAP_PASSIVE_SHOW_RETRY_DELAYS_MS.lastIndex) {
+                        pendingWakeRetry = false
+                    }
+                    return@postDelayed
                 }
-            } catch (_: Throwable) {
-            }
-        }, AMAP_WAKE_RETRY_DELAY_MS)
-    }
-
-    private fun tryLaunchAmapForProcessWarmup() {
-        try {
-            val launchIntent = activity.packageManager.getLaunchIntentForPackage(AMAP_FLOATING_PACKAGE) ?: return
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
-            activity.startActivity(launchIntent)
-        } catch (_: Throwable) {
-        }
-    }
-
-    private fun bringLauncherBackToFront() {
-        try {
-            val intent = Intent(activity, MainActivity::class.java)
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-            intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
-            activity.startActivity(intent)
-        } catch (_: Throwable) {
-        }
-    }
-
-    private fun isAmapProcessProbablyRunning(): Boolean {
-        return try {
-            val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
-            val processes = am.runningAppProcesses ?: return false
-            processes.any { info ->
-                info.processName == AMAP_FLOATING_PACKAGE || info.pkgList?.contains(AMAP_FLOATING_PACKAGE) == true
-            }
-        } catch (_: Throwable) {
-            false
+                try {
+                    sendShowMapBroadcast(activity, retryRect, retryDpi)
+                    isShown = true
+                    lastRect = Rect(retryRect)
+                    lastDpi = retryDpi
+                } catch (_: Throwable) {
+                }
+                if (index == AMAP_PASSIVE_SHOW_RETRY_DELAYS_MS.lastIndex) {
+                    pendingWakeRetry = false
+                }
+            }, delayMs)
         }
     }
 
