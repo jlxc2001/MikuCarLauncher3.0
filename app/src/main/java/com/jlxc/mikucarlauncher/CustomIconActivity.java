@@ -100,6 +100,7 @@ public class CustomIconActivity extends Activity {
             @Override
             public void onClick(View view) {
                 IconPackManager.useIconPackForApp(CustomIconActivity.this, pkg, cls);
+                AppDrawerCacheManager.requestLauncherRefresh(CustomIconActivity.this);
                 Toast.makeText(CustomIconActivity.this, "已使用当前图标包", Toast.LENGTH_SHORT).show();
                 finish();
             }
@@ -110,6 +111,7 @@ public class CustomIconActivity extends Activity {
             @Override
             public void onClick(View view) {
                 IconPackManager.useSystemIconForApp(CustomIconActivity.this, pkg, cls);
+                AppDrawerCacheManager.requestLauncherRefresh(CustomIconActivity.this);
                 Toast.makeText(CustomIconActivity.this, "已恢复系统默认图标", Toast.LENGTH_SHORT).show();
                 finish();
             }
@@ -167,6 +169,7 @@ public class CustomIconActivity extends Activity {
                 } catch (Throwable ignored) {
                 }
                 IconPackManager.setCustomIconUri(this, pkg, cls, uri.toString());
+                AppDrawerCacheManager.requestLauncherRefresh(this);
                 Toast.makeText(this, "已更换图标", Toast.LENGTH_SHORT).show();
                 finish();
             }

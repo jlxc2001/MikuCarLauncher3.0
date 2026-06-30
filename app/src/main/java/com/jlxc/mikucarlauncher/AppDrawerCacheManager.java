@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Set;
 
 public final class AppDrawerCacheManager {
+    public static final String PREF_APP_DRAWER_FORCE_RELOAD_AT = "app_drawer_force_reload_at";
     private static final String CACHE_DIR = "app_drawer_thumb_cache";
     private static final String ICON_DIR = "icons";
     private static final String INDEX_FILE = "index.json";
@@ -285,6 +286,25 @@ public final class AppDrawerCacheManager {
         memoryCache = null;
         try {
             deleteRecursively(cacheDir(context));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    public static synchronized void clearMemoryCache() {
+        memoryCache = null;
+    }
+
+    public static void requestLauncherRefresh(Context context) {
+        if (context == null) {
+            return;
+        }
+        clearMemoryCache();
+        try {
+            context.getApplicationContext()
+                    .getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putLong(PREF_APP_DRAWER_FORCE_RELOAD_AT, System.currentTimeMillis())
+                    .apply();
         } catch (Throwable ignored) {
         }
     }

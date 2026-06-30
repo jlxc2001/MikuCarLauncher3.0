@@ -82,6 +82,14 @@ public class AppDrawerSettingsActivity extends Activity {
             }
         });
 
+        Button forceRefresh = addButton(root, "强制刷新 APP 列表");
+        forceRefresh.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                forceRefreshAppList();
+            }
+        });
+
         Button save = addButton(root, "保存应用抽屉显示设置");
         save.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -103,7 +111,8 @@ public class AppDrawerSettingsActivity extends Activity {
             @Override
             public void onClick(View view) {
                 AppDrawerCacheManager.clearCache(AppDrawerSettingsActivity.this);
-                Toast.makeText(AppDrawerSettingsActivity.this, "已清空 APP 缩略图缓存，下次打开应用抽屉会重新生成", Toast.LENGTH_LONG).show();
+                AppDrawerCacheManager.requestLauncherRefresh(AppDrawerSettingsActivity.this);
+                Toast.makeText(AppDrawerSettingsActivity.this, "已清空 APP 缩略图缓存，返回桌面会立即重新生成", Toast.LENGTH_LONG).show();
             }
         });
 
@@ -177,13 +186,20 @@ public class AppDrawerSettingsActivity extends Activity {
         return button;
     }
 
+    private void forceRefreshAppList() {
+        AppDrawerCacheManager.clearCache(this);
+        AppDrawerCacheManager.requestLauncherRefresh(this);
+        rebuildAppThumbCache();
+    }
+
     private void rebuildAppThumbCache() {
         Toast.makeText(this, "正在后台更新 APP 缩略图缓存…", Toast.LENGTH_SHORT).show();
         AppDrawerCacheManager.rebuildCacheAsync(this, new AppDrawerCacheManager.RefreshCallback() {
             @Override
             public void onFinished(boolean success, int count) {
                 if (success) {
-                    Toast.makeText(AppDrawerSettingsActivity.this, "APP 缩略图缓存已更新：" + count + " 个应用", Toast.LENGTH_LONG).show();
+                    AppDrawerCacheManager.requestLauncherRefresh(AppDrawerSettingsActivity.this);
+                    Toast.makeText(AppDrawerSettingsActivity.this, "APP 缩略图缓存已更新：" + count + " 个应用，返回桌面会立即刷新", Toast.LENGTH_LONG).show();
                 } else {
                     Toast.makeText(AppDrawerSettingsActivity.this, "APP 缩略图缓存更新失败", Toast.LENGTH_LONG).show();
                 }
@@ -205,7 +221,8 @@ public class AppDrawerSettingsActivity extends Activity {
                 .putInt("drawer_grid_rows", rows)
                 .apply();
 
-        Toast.makeText(this, "已保存应用抽屉显示设置", Toast.LENGTH_SHORT).show();
+        AppDrawerCacheManager.requestLauncherRefresh(this);
+        Toast.makeText(this, "已保存应用抽屉显示设置，返回桌面会立即刷新", Toast.LENGTH_SHORT).show();
     }
 
     private int parseInt(String value, int defaultValue) {

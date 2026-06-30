@@ -722,6 +722,10 @@ public class MainActivity extends Activity {
         if (backgroundView != null) {
             backgroundView.invalidate();
         }
+        if (launcherView != null) {
+            launcherView.setTurnSignalAudioAllowed(hasWindowFocusNow);
+            launcherView.invalidateAppIconCaches();
+        }
         // 不在 onResume 主动预加载应用列表，避免从外部 App 返回桌面时低速存储重新扫描导致卡顿。
         if (live2DView != null) {
             live2DView.resumeLive2D();
@@ -757,6 +761,9 @@ public class MainActivity extends Activity {
         if (live2DView != null) {
             live2DView.pauseLive2D();
         }
+        if (launcherView != null) {
+            launcherView.setTurnSignalAudioAllowed(false);
+        }
         if (amapFloatingCardController != null) {
             if (!shouldKeepAmapDuringHomeKeyTransient() && !shouldKeepAmapDuringColdStartWarmup()) {
                 amapFloatingCardController.onPause();
@@ -771,6 +778,9 @@ public class MainActivity extends Activity {
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         hasWindowFocusNow = hasFocus;
+        if (launcherView != null) {
+            launcherView.setTurnSignalAudioAllowed(hasFocus && isActivityResumed);
+        }
         if (hasFocus) {
             keepFullscreen();
             if (backgroundView != null) {

@@ -6,6 +6,9 @@ import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.InputType;
+import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -14,6 +17,7 @@ import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.AbsListView;
 import android.widget.BaseAdapter;
+import android.widget.EditText;
 import android.widget.GridView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -30,7 +34,10 @@ public class IconPackIconPickerActivity extends Activity {
     private String iconPackPkg;
     private String iconPackLabel;
     private GridView gridView;
+    private TextView resultCountView;
+    private EditText searchEdit;
 
+    private final List<IconPackManager.PackIconInfo> allIcons = new ArrayList<IconPackManager.PackIconInfo>();
     private final List<IconPackManager.PackIconInfo> icons = new ArrayList<IconPackManager.PackIconInfo>();
 
     @Override
@@ -78,13 +85,41 @@ public class IconPackIconPickerActivity extends Activity {
 
         TextView hint = new TextView(this);
         hint.setText("当前图标包：" + (iconPackLabel == null || iconPackLabel.length() == 0 ? iconPackPkg : iconPackLabel)
-                + "。这里可以给“" + (appLabel == null ? appPkg : appLabel) + "”选择图标包里的任意一个图标。");
+                + "。这里可以给“" + (appLabel == null ? appPkg : appLabel) + "”选择图标包里的任意一个图标。支持按图标资源名搜索。");
         hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
         hint.setTextColor(Color.rgb(82, 82, 82));
         hint.setGravity(Gravity.CENTER_VERTICAL);
         hint.setSingleLine(false);
         root.addView(hint, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(72)
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(68)
+        ));
+
+        searchEdit = new EditText(this);
+        searchEdit.setSingleLine(true);
+        searchEdit.setHint("搜索图标名字，例如 phone / music / nav / car");
+        searchEdit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        searchEdit.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        searchEdit.setTextColor(Color.rgb(30, 30, 30));
+        searchEdit.setPadding(dp(22), 0, dp(22), 0);
+        searchEdit.setBackgroundColor(Color.WHITE);
+        searchEdit.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                applyIconFilter(s == null ? "" : s.toString());
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+        root.addView(searchEdit, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(62)
+        ));
+
+        resultCountView = new TextView(this);
+        resultCountView.setText("正在读取图标…");
+        resultCountView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        resultCountView.setTextColor(Color.rgb(92, 92, 92));
+        resultCountView.setGravity(Gravity.CENTER_VERTICAL);
+        root.addView(resultCountView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(34)
         ));
 
         gridView = new GridView(this);
@@ -115,11 +150,9 @@ public class IconPackIconPickerActivity extends Activity {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        icons.clear();
-                        icons.addAll(list);
-                        if (gridView != null && gridView.getAdapter() != null) {
-                            ((BaseAdapter) gridView.getAdapter()).notifyDataSetChanged();
-                        }
+                        allIcons.clear();
+                        allIcons.addAll(list);
+                        applyIconFilter(searchEdit == null ? "" : searchEdit.getText().toString());
                         if (icons.isEmpty()) {
                             Toast.makeText(IconPackIconPickerActivity.this, "这个图标包没有读取到可选图标", Toast.LENGTH_LONG).show();
                         }
@@ -129,6 +162,29 @@ public class IconPackIconPickerActivity extends Activity {
         }, "MikuCarLauncher-IconPackIconLoader");
         worker.setPriority(Thread.MIN_PRIORITY);
         worker.start();
+    }
+
+
+    private void applyIconFilter(String keyword) {
+        String q = keyword == null ? "" : keyword.trim().toLowerCase();
+        icons.clear();
+        if (q.length() == 0) {
+            icons.addAll(allIcons);
+        } else {
+            for (IconPackManager.PackIconInfo item : allIcons) {
+                if (item == null) continue;
+                String name = item.drawableName == null ? "" : item.drawableName.toLowerCase();
+                if (name.contains(q)) {
+                    icons.add(item);
+                }
+            }
+        }
+        if (gridView != null && gridView.getAdapter() != null) {
+            ((BaseAdapter) gridView.getAdapter()).notifyDataSetChanged();
+        }
+        if (resultCountView != null) {
+            resultCountView.setText("显示 " + icons.size() + " / " + allIcons.size() + " 个图标");
+        }
     }
 
     private class IconAdapter extends BaseAdapter {
@@ -202,6 +258,7 @@ public class IconPackIconPickerActivity extends Activity {
                 public void onClick(View view) {
                     IconPackManager.setCustomIconFromIconPack(
                             IconPackIconPickerActivity.this, appPkg, appCls, item.iconPackPackage, item.drawableName);
+                    AppDrawerCacheManager.requestLauncherRefresh(IconPackIconPickerActivity.this);
                     Toast.makeText(IconPackIconPickerActivity.this, "已选择图标：" + item.drawableName, Toast.LENGTH_SHORT).show();
                     finish();
                 }

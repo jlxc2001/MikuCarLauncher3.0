@@ -74,6 +74,10 @@ public final class AppActionHelper {
                 }
             }
             launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                AmapFloatingCardController.sendCloseMapBroadcast(context);
+            } catch (Throwable ignored) {
+            }
             context.startActivity(launch);
         } catch (Throwable t) {
             Toast.makeText(context, "无法打开：" + (label == null ? pkg : label), Toast.LENGTH_SHORT).show();
@@ -99,6 +103,7 @@ public final class AppActionHelper {
                     @Override
                     public void onClick(DialogInterface dialogInterface, int which) {
                         IconPackManager.setCustomLabel(context, pkg, cls, edit.getText().toString());
+                        AppDrawerCacheManager.requestLauncherRefresh(context);
                         if (afterChange != null) {
                             afterChange.run();
                         }
@@ -110,6 +115,7 @@ public final class AppActionHelper {
                     @Override
                     public void onClick(DialogInterface dialogInterface, int which) {
                         IconPackManager.setCustomLabel(context, pkg, cls, "");
+                        AppDrawerCacheManager.requestLauncherRefresh(context);
                         if (afterChange != null) {
                             afterChange.run();
                         }
@@ -135,6 +141,7 @@ public final class AppActionHelper {
         hidden.add(pkg);
         sp.edit().putStringSet("hidden_apps", hidden).apply();
         IconPackManager.bumpVersion(context);
+        AppDrawerCacheManager.requestLauncherRefresh(context);
         if (afterChange != null) {
             afterChange.run();
         }

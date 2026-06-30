@@ -80,6 +80,8 @@ public class LauncherCanvasView extends View {
         focusArea = 0;
         selectedCardIndex = 0;
         selectedMineRowIndex = 0;
+        selectedCommonAppIndex = 0;
+        commonAppSelectionVisible = false;
         hardwareFocusVisible = false;
         appSelectionVisible = false;
         pressedMusicButton = -1;
@@ -97,6 +99,16 @@ public class LauncherCanvasView extends View {
 
     public void preloadAppDrawerCache() {
         loadAppsIfNeeded();
+    }
+
+    public void setTurnSignalAudioAllowed(boolean allowed) {
+        turnSignalAudioAllowed = allowed;
+        if (!allowed) {
+            try {
+                turnSignalSoundManager.stop();
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     // 固定 32:9 车机画布。背景图保持用户指定版本，不做裁切替换。
@@ -195,6 +207,7 @@ public class LauncherCanvasView extends View {
     private boolean appCacheRefreshRunning = false;
     private int appHiddenSignature = 0;
     private int appIconSignature = 0;
+    private long appDrawerForceReloadToken = 0L;
 
     private final List<AppEntry> commonAppsCache = new ArrayList<>();
     private final List<RectF> commonAppHitRects = new ArrayList<>();
@@ -223,6 +236,9 @@ public class LauncherCanvasView extends View {
     private int sidebarFocusIndex = 0;
     private int selectedCardIndex = 0;
     private int selectedMineRowIndex = 0;
+    private int selectedCommonAppIndex = 0;
+    private boolean commonAppSelectionVisible = false;
+    private boolean turnSignalAudioAllowed = true;
 
     public LauncherCanvasView(Context context) {
         super(context);
@@ -516,8 +532,13 @@ public class LauncherCanvasView extends View {
         drawGreetingArea(c);
 
         if (hardwareFocusVisible && focusArea == 1 && activeIndex == 0) {
-            RectF[] cards = new RectF[]{leftCard, rightTopCard, rightBottomCard, bottomLeftCard, bottomMiddleCard, bottomRightCard};
-            drawFocusStroke(c, cards[clamp(selectedCardIndex, 0, cards.length - 1)]);
+            if (selectedCardIndex == 3 && commonAppSelectionVisible && !commonAppHitRects.isEmpty()) {
+                selectedCommonAppIndex = clamp(selectedCommonAppIndex, 0, commonAppHitRects.size() - 1);
+                drawFocusStroke(c, commonAppHitRects.get(selectedCommonAppIndex));
+            } else {
+                RectF[] cards = new RectF[]{leftCard, rightTopCard, rightBottomCard, bottomLeftCard, bottomMiddleCard, bottomRightCard};
+                drawFocusStroke(c, cards[clamp(selectedCardIndex, 0, cards.length - 1)]);
+            }
         }
     }
 
@@ -1315,9 +1336,15 @@ public class LauncherCanvasView extends View {
     }
 
     private void openFirstCommonApp() {
+        selectedCommonAppIndex = 0;
+        openSelectedCommonApp();
+    }
+
+    private void openSelectedCommonApp() {
         loadCommonAppsIfNeeded();
         if (!commonAppsCache.isEmpty()) {
-            AppEntry app = commonAppsCache.get(0);
+            selectedCommonAppIndex = clamp(selectedCommonAppIndex, 0, commonAppsCache.size() - 1);
+            AppEntry app = commonAppsCache.get(selectedCommonAppIndex);
             if (app.isShoutShortcut()) {
                 showMikuTextShoutDialog();
             } else if (app.isTextDisplayShortcut()) {
@@ -1945,6 +1972,7 @@ public class LauncherCanvasView extends View {
             }
 
             pressedMusicButton = -1;
+            commonAppSelectionVisible = false;
             if (activeIndex == 0) {
                 if (getMusicPrevButtonRect().contains(x, y)) {
                     pressedMusicButton = 0;
@@ -2100,7 +2128,11 @@ public class LauncherCanvasView extends View {
             invalidate();
         }
 
-        turnSignalSoundManager.update(turnSignalState);
+        if (turnSignalAudioAllowed && getWindowToken() != null) {
+            turnSignalSoundManager.update(turnSignalState);
+        } else {
+            turnSignalSoundManager.stop();
+        }
 
         if (turnSignalState != TurnSignalSoundManager.STATE_NONE) {
             invalidate();
@@ -2468,24 +2500,84 @@ public class LauncherCanvasView extends View {
     }
 
     private boolean handleHomeCardKey(int keyCode) {
+        if (selectedCardIndex == 3) {
+            loadCommonAppsIfNeeded();
+            int commonCount = commonAppsCache.size();
+            if (commonCount > 0) {
+                selectedCommonAppIndex = clamp(selectedCommonAppIndex, 0, commonCount - 1);
+            }
+
+            if (commonAppSelectionVisible && commonCount > 0) {
+                if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+                    if (selectedCommonAppIndex > 0) {
+                        selectedCommonAppIndex--;
+                    } else {
+                        commonAppSelectionVisible = false;
+                        focusArea = 0;
+                    }
+                    invalidate();
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                    if (selectedCommonAppIndex < commonCount - 1) {
+                        selectedCommonAppIndex++;
+                    } else {
+                        commonAppSelectionVisible = false;
+                        selectedCardIndex = 4;
+                    }
+                    invalidate();
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                    commonAppSelectionVisible = false;
+                    selectedCardIndex = 0;
+                    invalidate();
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                    invalidate();
+                    return true;
+                }
+                if (isEnterKey(keyCode)) {
+                    openSelectedCommonApp();
+                    return true;
+                }
+            }
+        }
+
         if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
             // 1/4 位于最左列，再向左回到左侧按钮列。
             if (selectedCardIndex == 0 || selectedCardIndex == 3) {
+                commonAppSelectionVisible = false;
                 focusArea = 0;
             } else {
                 selectedCardIndex = Math.max(0, selectedCardIndex - 1);
+                commonAppSelectionVisible = false;
             }
             invalidate();
             return true;
         }
 
         if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
-            selectedCardIndex = Math.min(5, selectedCardIndex + 1);
+            if (selectedCardIndex == 3) {
+                loadCommonAppsIfNeeded();
+                if (!commonAppsCache.isEmpty()) {
+                    commonAppSelectionVisible = true;
+                    selectedCommonAppIndex = clamp(selectedCommonAppIndex, 0, commonAppsCache.size() - 1);
+                } else {
+                    selectedCardIndex = 4;
+                    commonAppSelectionVisible = false;
+                }
+            } else {
+                selectedCardIndex = Math.min(5, selectedCardIndex + 1);
+                commonAppSelectionVisible = false;
+            }
             invalidate();
             return true;
         }
 
         if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+            commonAppSelectionVisible = false;
             if (selectedCardIndex >= 3) {
                 // 底部 4/5/6 回到上方最近卡片。
                 selectedCardIndex = selectedCardIndex == 3 ? 0 : (selectedCardIndex == 4 ? 2 : 2);
@@ -2497,8 +2589,21 @@ public class LauncherCanvasView extends View {
         }
 
         if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-            if (selectedCardIndex == 0 || selectedCardIndex == 2) {
+            commonAppSelectionVisible = false;
+            if (selectedCardIndex == 0) {
                 selectedCardIndex = 3;
+                loadCommonAppsIfNeeded();
+                if (!commonAppsCache.isEmpty()) {
+                    commonAppSelectionVisible = true;
+                    selectedCommonAppIndex = clamp(selectedCommonAppIndex, 0, commonAppsCache.size() - 1);
+                }
+            } else if (selectedCardIndex == 2) {
+                selectedCardIndex = 3;
+                loadCommonAppsIfNeeded();
+                if (!commonAppsCache.isEmpty()) {
+                    commonAppSelectionVisible = true;
+                    selectedCommonAppIndex = clamp(selectedCommonAppIndex, 0, commonAppsCache.size() - 1);
+                }
             } else if (selectedCardIndex == 1) {
                 selectedCardIndex = 2;
             }
@@ -2516,7 +2621,14 @@ public class LauncherCanvasView extends View {
             } else if (selectedCardIndex == 2) {
                 openBluetoothMusicActivity();
             } else if (selectedCardIndex == 3) {
-                openFirstCommonApp();
+                loadCommonAppsIfNeeded();
+                if (!commonAppsCache.isEmpty()) {
+                    commonAppSelectionVisible = true;
+                    selectedCommonAppIndex = clamp(selectedCommonAppIndex, 0, commonAppsCache.size() - 1);
+                    openSelectedCommonApp();
+                } else {
+                    Toast.makeText(getContext(), "4号卡片尚未设置常用软件", Toast.LENGTH_SHORT).show();
+                }
             } else if (selectedCardIndex == 5) {
                 getContext().startActivity(new Intent(getContext(), WeatherSettingsActivity.class));
             } else {
@@ -2792,6 +2904,10 @@ public class LauncherCanvasView extends View {
                 launch.setPackage(pkg);
             }
             launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                AmapFloatingCardController.sendCloseMapBroadcast(getContext());
+            } catch (Throwable ignored) {
+            }
             getContext().startActivity(launch);
         } catch (Throwable t) {
             Toast.makeText(getContext(), "无法打开：" + label, Toast.LENGTH_SHORT).show();
@@ -2816,11 +2932,21 @@ public class LauncherCanvasView extends View {
         Set<String> hidden = new HashSet<String>(sp.getStringSet("hidden_apps", new HashSet<String>()));
         final int hiddenSignature = hidden.hashCode();
         final int iconSignature = IconPackManager.getIconSignature(getContext());
+        final long forceReloadToken = sp.getLong(AppDrawerCacheManager.PREF_APP_DRAWER_FORCE_RELOAD_AT, 0L);
+
+        if (forceReloadToken != appDrawerForceReloadToken) {
+            AppDrawerCacheManager.clearMemoryCache();
+            cachedApps.clear();
+            appListLoaded = false;
+            appListLoading = false;
+            appDrawerForceReloadToken = forceReloadToken;
+        }
 
         final Context appContext = getContext().getApplicationContext();
         final Set<String> hiddenSnapshot = new HashSet<String>(hidden);
 
-        if (appListLoaded && hiddenSignature == appHiddenSignature && iconSignature == appIconSignature) {
+        if (appListLoaded && hiddenSignature == appHiddenSignature && iconSignature == appIconSignature
+                && forceReloadToken == appDrawerForceReloadToken) {
             return;
         }
 
@@ -2832,6 +2958,7 @@ public class LauncherCanvasView extends View {
             cachedApps.addAll(toAppEntries(appContext, diskCache));
             appHiddenSignature = hiddenSignature;
             appIconSignature = iconSignature;
+            appDrawerForceReloadToken = forceReloadToken;
             lastAppLoadTime = System.currentTimeMillis();
             appListLoaded = true;
             appListLoading = false;
@@ -2847,6 +2974,7 @@ public class LauncherCanvasView extends View {
         appListLoading = true;
         appHiddenSignature = hiddenSignature;
         appIconSignature = iconSignature;
+        appDrawerForceReloadToken = forceReloadToken;
 
         Thread worker = new Thread(new Runnable() {
             @Override
@@ -2860,6 +2988,7 @@ public class LauncherCanvasView extends View {
                     public void run() {
                         cachedApps.clear();
                         cachedApps.addAll(result);
+                        appDrawerForceReloadToken = forceReloadToken;
                         lastAppLoadTime = System.currentTimeMillis();
                         appListLoaded = true;
                         appListLoading = false;

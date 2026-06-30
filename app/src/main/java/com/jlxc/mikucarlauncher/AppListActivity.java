@@ -18,6 +18,7 @@ import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.AbsListView;
 import android.widget.BaseAdapter;
+import android.widget.Button;
 import android.widget.GridView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -84,6 +85,23 @@ public class AppListActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(48)
         ));
 
+        Button refresh = new Button(this);
+        refresh.setText("刷新 APP 列表 / 重建缓存");
+        refresh.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        refresh.setAllCaps(false);
+        refresh.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                AppDrawerCacheManager.clearCache(AppListActivity.this);
+                AppDrawerCacheManager.requestLauncherRefresh(AppListActivity.this);
+                Toast.makeText(AppListActivity.this, "正在刷新 APP 列表", Toast.LENGTH_SHORT).show();
+                buildUi();
+            }
+        });
+        root.addView(refresh, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(44)
+        ));
+
         GridView gridView = new GridView(this);
         gridView.setNumColumns(columns);
         gridView.setHorizontalSpacing(dp(18));
@@ -108,7 +126,7 @@ public class AppListActivity extends Activity {
     private int getAvailableGridHeight() {
         DisplayMetrics dm = getResources().getDisplayMetrics();
         int screenHeight = dm.heightPixels;
-        int reserved = dp(14 + 14 + 42 + 48 + 8 + 8 + 16);
+        int reserved = dp(14 + 14 + 42 + 48 + 44 + 8 + 8 + 16);
         return Math.max(dp(400), screenHeight - reserved);
     }
 
@@ -164,6 +182,7 @@ public class AppListActivity extends Activity {
         Set<String> hidden = new HashSet<String>(sp.getStringSet("hidden_apps", new HashSet<String>()));
         hidden.add(pkg);
         sp.edit().putStringSet("hidden_apps", hidden).apply();
+        AppDrawerCacheManager.requestLauncherRefresh(this);
         Toast.makeText(this, "已隐藏：" + label, Toast.LENGTH_SHORT).show();
         buildUi();
     }
