@@ -849,3 +849,10 @@ adb shell am broadcast -a com.autonavi.plus.closemap
 - 新增监听 `com.forfan.operator_reversing` 广播，用于辅助触发倒车状态刷新。
 - 倒车状态激活时立即发送 `com.autonavi.plus.closemap`，并暂停首页 showmap；倒车状态恢复 0 后，回到首页时再允许 showmap。
 - 不再使用雷达数组误判，不会阻断普通第三方 App 返回首页。
+
+
+## V0.7.4.2 Live2D 通用兜底动作/表情开关
+- 默认关闭 Live2D 导入时的通用兜底动作 / 表情生成。
+- Live2D 设置页新增“导入时启用通用兜底动作 / 表情”开关，默认不勾选。
+- 新增“删除当前模型的通用兜底动作 / 表情”按钮，可清理已导入模型里的 `motions_default/`、`expressions_default/` 以及 model3.json 中对应引用。
+- 模型自带的动作文件和表情文件不会删除。

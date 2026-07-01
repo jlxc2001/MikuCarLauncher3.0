@@ -21,6 +21,10 @@ public final class Live2DModelImporter {
     public static final String PREF_MOTION_COUNT = "live2d_motion_count";
     public static final String PREF_EXPRESSION_COUNT = "live2d_expression_count";
 
+    // V0.7.4.2：默认关闭通用兜底动作/表情，避免不适配用户模型。
+    public static final String PREF_ENABLE_DEFAULT_FALLBACK = "live2d_enable_default_fallback_motion_expression";
+    public static final boolean DEFAULT_ENABLE_DEFAULT_FALLBACK = false;
+
     private Live2DModelImporter() {
     }
 
@@ -78,13 +82,15 @@ public final class Live2DModelImporter {
             int expressionCount = countExpressionFiles(outRoot);
             boolean installedDefaultMotions = false;
             boolean installedDefaultExpressions = false;
+            boolean enableDefaultFallback = context.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
+                    .getBoolean(PREF_ENABLE_DEFAULT_FALLBACK, DEFAULT_ENABLE_DEFAULT_FALLBACK);
 
-            if (motionCount <= 0) {
+            if (enableDefaultFallback && motionCount <= 0) {
                 motionCount = installDefaultMotionsIfPossible(modelFile);
                 installedDefaultMotions = motionCount > 0;
             }
 
-            if (expressionCount <= 0) {
+            if (enableDefaultFallback && expressionCount <= 0) {
                 expressionCount = installDefaultExpressionsIfPossible(modelFile);
                 installedDefaultExpressions = expressionCount > 0;
             }
@@ -95,13 +101,15 @@ public final class Live2DModelImporter {
                         ? "，未发现自带动作，已加入 " + motionCount + " 个通用动作"
                         : "，读取到 " + motionCount + " 个动作文件";
             } else {
-                message += "，未发现动作文件";
+                message += enableDefaultFallback ? "，未发现动作文件" : "，未发现动作文件，未启用通用兜底动作";
             }
 
             if (expressionCount > 0) {
                 message += installedDefaultExpressions
                         ? "，已加入 " + expressionCount + " 个通用表情"
                         : "，读取到 " + expressionCount + " 个表情文件";
+            } else if (!enableDefaultFallback) {
+                message += "，未发现表情文件，未启用通用兜底表情";
             }
 
             return new Result(true, modelFile.getAbsolutePath(), label, message, motionCount, expressionCount);
@@ -197,6 +205,120 @@ public final class Live2DModelImporter {
                 }
             }
         }
+    }
+
+
+    public static Result removeDefaultFallbackFromCurrentModel(Context context) {
+        if (context == null) {
+            return new Result(false, "", "", "无法读取当前模型");
+        }
+        try {
+            String modelPath = context.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
+                    .getString(Live2DDecorView.PREF_MODEL_PATH, "");
+            if (modelPath == null || modelPath.trim().length() == 0) {
+                return new Result(false, "", "", "当前没有已导入的 Live2D 模型");
+            }
+            File modelFile = new File(modelPath);
+            if (!modelFile.exists()) {
+                return new Result(false, modelPath, "", "当前模型文件不存在，请重新导入");
+            }
+            File modelDir = modelFile.getParentFile();
+            if (modelDir == null) {
+                return new Result(false, modelPath, "", "无法定位模型目录");
+            }
+
+            boolean changed = false;
+            File defaultMotionDir = new File(modelDir, "motions_default");
+            File defaultExpressionDir = new File(modelDir, "expressions_default");
+            if (defaultMotionDir.exists()) {
+                deleteRecursively(defaultMotionDir);
+                changed = true;
+            }
+            if (defaultExpressionDir.exists()) {
+                deleteRecursively(defaultExpressionDir);
+                changed = true;
+            }
+
+            String name = modelFile.getName().toLowerCase();
+            if (name.endsWith(".model3.json")) {
+                JSONObject root = new JSONObject(readText(modelFile));
+                JSONObject refs = root.optJSONObject("FileReferences");
+                if (refs != null) {
+                    JSONObject motions = refs.optJSONObject("Motions");
+                    if (motions != null) {
+                        JSONArray keys = motions.names();
+                        if (keys != null) {
+                            for (int i = keys.length() - 1; i >= 0; i--) {
+                                String key = keys.optString(i, "");
+                                JSONArray arr = motions.optJSONArray(key);
+                                JSONArray filtered = removeDefaultMotionEntries(arr);
+                                if (filtered == null || filtered.length() == 0) {
+                                    motions.remove(key);
+                                } else if (arr != null && filtered.length() != arr.length()) {
+                                    motions.put(key, filtered);
+                                }
+                            }
+                        }
+                        if (motions.length() == 0) {
+                            refs.remove("Motions");
+                        }
+                    }
+
+                    JSONArray expressions = refs.optJSONArray("Expressions");
+                    if (expressions != null) {
+                        JSONArray filteredExpressions = removeDefaultExpressionEntries(expressions);
+                        if (filteredExpressions.length() == 0) {
+                            refs.remove("Expressions");
+                        } else if (filteredExpressions.length() != expressions.length()) {
+                            refs.put("Expressions", filteredExpressions);
+                        }
+                    }
+                    writeText(modelFile, root.toString(2));
+                    changed = true;
+                }
+            }
+
+            File root = new File(context.getFilesDir(), "live2d/selected_model");
+            int motionCount = countMotionFiles(root.exists() ? root : modelDir);
+            int expressionCount = countExpressionFiles(root.exists() ? root : modelDir);
+            String message = changed
+                    ? "已删除当前模型里的通用兜底动作/表情，保留模型自带文件"
+                    : "当前模型没有检测到通用兜底动作/表情";
+            return new Result(true, modelPath, "", message, motionCount, expressionCount);
+        } catch (Throwable t) {
+            return new Result(false, "", "", "删除通用兜底失败：" + t.getMessage());
+        }
+    }
+
+    private static JSONArray removeDefaultMotionEntries(JSONArray arr) throws Exception {
+        if (arr == null) {
+            return null;
+        }
+        JSONArray out = new JSONArray();
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject item = arr.optJSONObject(i);
+            String file = item == null ? "" : item.optString("File", "");
+            if (file != null && file.startsWith("motions_default/")) {
+                continue;
+            }
+            out.put(arr.get(i));
+        }
+        return out;
+    }
+
+    private static JSONArray removeDefaultExpressionEntries(JSONArray arr) throws Exception {
+        JSONArray out = new JSONArray();
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject item = arr.optJSONObject(i);
+            String file = item == null ? "" : item.optString("File", "");
+            String name = item == null ? "" : item.optString("Name", "");
+            if ((file != null && file.startsWith("expressions_default/"))
+                    || (name != null && name.startsWith("default_"))) {
+                continue;
+            }
+            out.put(arr.get(i));
+        }
+        return out;
     }
 
     private static int installDefaultMotionsIfPossible(File modelFile) {

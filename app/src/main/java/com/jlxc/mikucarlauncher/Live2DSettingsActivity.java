@@ -28,6 +28,7 @@ public class Live2DSettingsActivity extends Activity {
     private TextView modelValue;
     private EditText qualityEdit;
     private EditText fpsEdit;
+    private CheckBox fallbackCheck;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -65,8 +66,8 @@ public class Live2DSettingsActivity extends Activity {
                 + "点击“选择 Live2D 模型文件夹”，选择包含 model3.json / model.json 的模型文件夹即可。"
                 + "本软件会把模型文件夹复制到应用内部目录，避免 WebView 读取 content:// 或外部存储时显示失败。\\n"
                 + "位置和大小不用输入数值，点击“拖动/捏合调整位置大小”后直接用手操作。\\n"
-                + "v62 增加画质倍率和帧率设置。画质倍率最高 2.0，帧率最高 60。"
-                + "如果调整页面第一次加载不出来，会自动延迟重载，也可以点调整页里的“重载模型”。");
+                + "v62 增加画质倍率和帧率设置。画质倍率最高 2.0，帧率最高 60。\\n"
+                + "v0.7.4.2 起默认不再自动添加通用兜底动作/表情，避免不适配你的模型。");
         hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
         hint.setTextColor(Color.rgb(82, 82, 82));
         hint.setGravity(Gravity.CENTER_VERTICAL);
@@ -84,6 +85,22 @@ public class Live2DSettingsActivity extends Activity {
         enabledCheck.setBackgroundColor(Color.WHITE);
         enabledCheck.setChecked(sp.getBoolean(Live2DDecorView.PREF_ENABLED, false));
         root.addView(enabledCheck, rowLp());
+
+        fallbackCheck = new CheckBox(this);
+        fallbackCheck.setText("导入时启用通用兜底动作 / 表情（默认关闭，不适配模型时请不要开）");
+        fallbackCheck.setTextSize(TypedValue.COMPLEX_UNIT_SP, 21);
+        fallbackCheck.setTextColor(Color.rgb(28, 28, 28));
+        fallbackCheck.setGravity(Gravity.CENTER_VERTICAL);
+        fallbackCheck.setPadding(dp(26), 0, dp(26), 0);
+        fallbackCheck.setBackgroundColor(Color.WHITE);
+        fallbackCheck.setSingleLine(false);
+        fallbackCheck.setChecked(sp.getBoolean(
+                Live2DModelImporter.PREF_ENABLE_DEFAULT_FALLBACK,
+                Live2DModelImporter.DEFAULT_ENABLE_DEFAULT_FALLBACK
+        ));
+        root.addView(fallbackCheck, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(96)
+        ));
 
         modelValue = addValue(root, "当前模型：");
         refreshModelValue();
@@ -114,7 +131,15 @@ public class Live2DSettingsActivity extends Activity {
             }
         });
 
-        Button save = addButton(root, "保存启用状态 / 画质 / 帧率");
+        Button removeFallback = addButton(root, "删除当前模型的通用兜底动作 / 表情");
+        removeFallback.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                removeDefaultFallbackFiles();
+            }
+        });
+
+        Button save = addButton(root, "保存启用状态 / 画质 / 帧率 / 兜底开关");
         save.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
@@ -253,6 +278,8 @@ public class Live2DSettingsActivity extends Activity {
 
         getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE).edit()
                 .putBoolean(Live2DDecorView.PREF_ENABLED, enabledCheck.isChecked())
+                .putBoolean(Live2DModelImporter.PREF_ENABLE_DEFAULT_FALLBACK,
+                        fallbackCheck != null && fallbackCheck.isChecked())
                 .putFloat(Live2DDecorView.PREF_RENDER_QUALITY, quality)
                 .putInt(Live2DDecorView.PREF_TARGET_FPS, fps)
                 .apply();
@@ -261,6 +288,37 @@ public class Live2DSettingsActivity extends Activity {
         fpsEdit.setText(String.valueOf(fps));
 
         Toast.makeText(this, "已保存 Live2D 设置。回到首页或重新进入调整页后生效", Toast.LENGTH_SHORT).show();
+    }
+
+    private void removeDefaultFallbackFiles() {
+        Toast.makeText(this, "正在删除通用兜底动作/表情…", Toast.LENGTH_SHORT).show();
+        Thread worker = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final Live2DModelImporter.Result result = Live2DModelImporter.removeDefaultFallbackFromCurrentModel(
+                        Live2DSettingsActivity.this.getApplicationContext()
+                );
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (result.success) {
+                            getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE).edit()
+                                    .putInt(Live2DModelImporter.PREF_MOTION_COUNT, result.motionCount)
+                                    .putInt(Live2DModelImporter.PREF_EXPRESSION_COUNT, result.expressionCount)
+                                    .putBoolean(Live2DModelImporter.PREF_ENABLE_DEFAULT_FALLBACK, false)
+                                    .apply();
+                            if (fallbackCheck != null) {
+                                fallbackCheck.setChecked(false);
+                            }
+                            refreshModelValue();
+                        }
+                        Toast.makeText(Live2DSettingsActivity.this, result.message, Toast.LENGTH_LONG).show();
+                    }
+                });
+            }
+        }, "MikuCarLauncher-Live2DCleanup");
+        worker.setPriority(Thread.MIN_PRIORITY);
+        worker.start();
     }
 
     private void resetPosition() {
@@ -319,6 +377,11 @@ public class Live2DSettingsActivity extends Activity {
                     );
                 } catch (Throwable ignored) {
                 }
+
+                getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE).edit()
+                        .putBoolean(Live2DModelImporter.PREF_ENABLE_DEFAULT_FALLBACK,
+                                fallbackCheck != null && fallbackCheck.isChecked())
+                        .apply();
 
                 Toast.makeText(this, "正在导入 Live2D 模型文件夹…", Toast.LENGTH_SHORT).show();
                 Thread worker = new Thread(new Runnable() {
