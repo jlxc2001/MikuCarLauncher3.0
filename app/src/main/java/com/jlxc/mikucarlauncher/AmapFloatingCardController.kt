@@ -62,7 +62,7 @@ class AmapFloatingCardController(
         private const val MIN_SCALE_PERCENT = 10
         private const val MAX_SCALE_PERCENT = 300
         private val AMAP_PASSIVE_SHOW_RETRY_DELAYS_MS = longArrayOf(350L, 900L, 1800L, 3000L, 5200L, 7800L)
-        private val AMAP_HOME_GUARANTEE_SHOW_DELAYS_MS = longArrayOf(0L, 260L, 700L, 1250L, 2100L, 3400L, 5200L, 7600L, 10500L, 14000L)
+        private val AMAP_HOME_GUARANTEE_SHOW_DELAYS_MS = longArrayOf(0L, 260L, 700L, 1250L, 2100L, 3400L, 5200L, 7600L, 10500L, 14000L, 18000L, 23000L)
 
 
         data class FloatingCardSettings(
@@ -278,8 +278,6 @@ class AmapFloatingCardController(
     fun onLayoutReady() {
         if (allowShowOnHome) {
             postUpdateMapWindow()
-        } else {
-            closeMap()
         }
     }
 
@@ -297,11 +295,11 @@ class AmapFloatingCardController(
 
     /**
      * 首页重复点击“首页”或实体 HOME 键时用于手动修复悬浮窗：
-     * 先关闭旧窗口，再在很短延迟后重新发送 showmap，避免高德悬浮窗偶发丢失。
+     * 只强制补发 showmap，不再先发送 closemap。
+     * 部分高德共存悬浮版在“先 close 后 show”时会出现主悬浮窗刚出现又消失。
      */
     fun reloadMapWindow() {
         if (!allowShowOnHome) {
-            closeMap()
             return
         }
         isShown = false
@@ -309,13 +307,8 @@ class AmapFloatingCardController(
         lastDpi = -1
         hasTriedWakeAmapProcess = false
         pendingWakeRetry = false
-        sendCloseMapBroadcast(activity)
-        mainHandler.postDelayed({
-            if (allowShowOnHome) {
-                updateMapWindow()
-                scheduleHomeGuaranteeShowBurst(false)
-            }
-        }, 180L)
+        forceShowCurrentMapWindow()
+        scheduleHomeGuaranteeShowBurst(false)
     }
 
     /**
@@ -324,24 +317,17 @@ class AmapFloatingCardController(
      */
     fun ensureMapWindowVisibleAggressively(closeFirst: Boolean) {
         if (!allowShowOnHome) {
-            closeMap()
             return
         }
         if (closeFirst) {
+            // 历史版本这里会先 closemap 再 showmap。实车测试发现这会让高德主悬浮窗成功出现后又自动消失。
+            // 现在 closeFirst 只重置去重状态，不再真正发送 closemap；离开首页时仍由 setHomeVisible(false) 负责关闭。
             isShown = false
             lastRect = null
             lastDpi = -1
-            sendCloseMapBroadcast(activity)
-            mainHandler.postDelayed({
-                if (allowShowOnHome) {
-                    forceShowCurrentMapWindow()
-                    scheduleHomeGuaranteeShowBurst(false)
-                }
-            }, 180L)
-        } else {
-            forceShowCurrentMapWindow()
-            scheduleHomeGuaranteeShowBurst(false)
         }
+        forceShowCurrentMapWindow()
+        scheduleHomeGuaranteeShowBurst(false)
     }
 
     fun postUpdateMapWindow() {
@@ -352,7 +338,6 @@ class AmapFloatingCardController(
 
     fun updateMapWindow() {
         if (!allowShowOnHome) {
-            closeMap()
             return
         }
 
@@ -433,7 +418,8 @@ class AmapFloatingCardController(
             return
         }
         if (closeFirst) {
-            sendCloseMapBroadcast(activity)
+            // 只重置本地状态，不再主动 close。
+            // 主动 close 会和高德自身导航浮窗/主悬浮窗状态竞争，导致窗口闪现后消失。
             isShown = false
             lastRect = null
             lastDpi = -1
