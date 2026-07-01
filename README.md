@@ -856,3 +856,11 @@ adb shell am broadcast -a com.autonavi.plus.closemap
 - Live2D 设置页新增“导入时启用通用兜底动作 / 表情”开关，默认不勾选。
 - 新增“删除当前模型的通用兜底动作 / 表情”按钮，可清理已导入模型里的 `motions_default/`、`expressions_default/` 以及 model3.json 中对应引用。
 - 模型自带的动作文件和表情文件不会删除。
+
+
+## V0.7.4.3 高德 AVM 前台安全守护
+- 保持 V0.7.4.0 之后的高德最小状态机：Launcher 不启动/不杀/不重启高德，只发送 showmap/closemap。
+- 在 V0.7.4.1 的 carletter_reserve_state 倒车守护基础上，新增前台 Activity 安全检测。
+- 检测到 `com.baony.avm360` 或 `com.baony.ui.activity.AVMBVActivity` 位于前台时，持续节流发送 `closemap`，用于雷达/双闪自动调出全景影像的场景。
+- MainActivity 在 pause / 失焦后延迟检查前台 Activity，避免 AVM 自动拉起时首页逻辑仍保留高德悬浮窗。
+- 退出 AVM 后回到首页，恢复普通首页 showmap 逻辑，不保留安全阻断倒计时。

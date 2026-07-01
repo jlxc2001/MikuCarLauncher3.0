@@ -92,12 +92,29 @@ public class MainActivity extends Activity {
     private BroadcastReceiver reverseStateReceiver;
     private ContentObserver reverseStateObserver;
     private boolean reverseCameraActive = false;
+    private Handler mainHandler;
+    private boolean panoramaForegroundActive = false;
+    private boolean foregroundSafetyMonitorStarted = false;
+    private long lastPanoramaCloseMapAt = 0L;
+    private final Runnable foregroundSafetyMonitorRunnable = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                checkAmapForegroundSafety("foreground-monitor");
+            } catch (Throwable ignored) {
+            }
+            if (foregroundSafetyMonitorStarted && mainHandler != null) {
+                mainHandler.postDelayed(this, 350L);
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         keepFullscreen();
+        mainHandler = new Handler();
 
         appWidgetManager = AppWidgetManager.getInstance(this);
         appWidgetHost = new RoundedAppWidgetHost(this, APPWIDGET_HOST_ID);
@@ -200,8 +217,11 @@ public class MainActivity extends Activity {
         setContentView(rootLayout);
         registerHomeKeyReceiver();
         registerReverseSafetyObserver();
+        startAmapForegroundSafetyMonitor();
         updateReverseCameraSafetyState("create");
-        // V0.7.4.1：高德逻辑仍保持最小状态机；倒车安全关闭通过车机系统设置 carletter_reserve_state 精准触发。
+        checkAmapForegroundSafety("create");
+        // V0.7.4.3：高德逻辑仍保持最小状态机；倒车档位用 carletter_reserve_state，
+        // 雷达/双闪触发的全景则用前台 AVM Activity / Window 检测精准关闭。
 
         rootLayout.post(new Runnable() {
             @Override
@@ -471,6 +491,104 @@ public class MainActivity extends Activity {
         }
     }
 
+
+    private void startAmapForegroundSafetyMonitor() {
+        if (foregroundSafetyMonitorStarted) {
+            return;
+        }
+        foregroundSafetyMonitorStarted = true;
+        if (mainHandler != null) {
+            mainHandler.removeCallbacks(foregroundSafetyMonitorRunnable);
+            mainHandler.postDelayed(foregroundSafetyMonitorRunnable, 250L);
+        }
+    }
+
+    private void stopAmapForegroundSafetyMonitor() {
+        foregroundSafetyMonitorStarted = false;
+        if (mainHandler != null) {
+            mainHandler.removeCallbacks(foregroundSafetyMonitorRunnable);
+        }
+    }
+
+    private void checkAmapForegroundSafety(String reason) {
+        ComponentName top = getTopActivityComponentCompat();
+        boolean active = isKnownPanoramaOrVehicleForeground(top);
+        if (active) {
+            panoramaForegroundActive = true;
+            long now = System.currentTimeMillis();
+            // 全景画面可能由雷达/双闪自动拉起，此时 MainActivity 会被 pause，不能依赖 onPause 的普通关闭逻辑。
+            // 这里在 AVM 前台期间持续补发 closemap，但做轻微节流，避免 log 和广播过量。
+            if (now - lastPanoramaCloseMapAt > 800L) {
+                lastPanoramaCloseMapAt = now;
+                closeAmapForReverseCamera(reason + " top=" + flattenComponent(top));
+            }
+            return;
+        }
+
+        if (panoramaForegroundActive) {
+            panoramaForegroundActive = false;
+            Log.i(TAG_AMAP, "panoramaForegroundActive=false reason=" + reason + " top=" + flattenComponent(top));
+            if (isActivityResumed && isHomePage() && rootLayout != null) {
+                rootLayout.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        updateAmapFloatingCardVisibility();
+                    }
+                });
+            }
+        }
+    }
+
+    private ComponentName getTopActivityComponentCompat() {
+        try {
+            ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+            if (am == null) return null;
+            List<ActivityManager.RunningTaskInfo> tasks = am.getRunningTasks(1);
+            if (tasks == null || tasks.isEmpty()) return null;
+            return tasks.get(0).topActivity;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private String flattenComponent(ComponentName cn) {
+        if (cn == null) return "";
+        try {
+            return cn.flattenToShortString();
+        } catch (Throwable ignored) {
+            return cn.getPackageName() + "/" + cn.getClassName();
+        }
+    }
+
+    private boolean isKnownPanoramaOrVehicleForeground(ComponentName cn) {
+        if (cn == null) return false;
+        String pkg = cn.getPackageName();
+        String cls = cn.getClassName();
+        if (pkg == null) pkg = "";
+        if (cls == null) cls = "";
+        String lowerPkg = pkg.toLowerCase(Locale.US);
+        String lowerCls = cls.toLowerCase(Locale.US);
+
+        // 实车 log：雷达/双闪/倒车触发的全景会出现 com.baony.avm360/com.baony.ui.activity.AVMBVActivity，
+        // 有时还会先出现 Splash Screen com.baony.avm360。只要 AVM 进前台，就必须安全优先关闭高德悬浮窗。
+        if ("com.baony.avm360".equals(pkg)) return true;
+        if (lowerCls.contains("avmbvactivity")) return true;
+        if (lowerPkg.contains("avm") || lowerPkg.contains("panorama")) return true;
+        if (lowerCls.contains("avm") || lowerCls.contains("panorama")) return true;
+
+        // 部分车机把倒车/泊车/车辆画面放在 com.ts.MainUI 内部 Activity。
+        // 它在前台时不是 Launcher 首页，关闭高德悬浮窗是安全策略，不影响回到首页后的 showmap。
+        if ("com.ts.MainUI".equals(pkg)) {
+            return lowerCls.contains("reverse")
+                    || lowerCls.contains("park")
+                    || lowerCls.contains("camera")
+                    || lowerCls.contains("can")
+                    || lowerCls.contains("audi")
+                    || lowerCls.contains("mainui");
+        }
+        return false;
+    }
+
     private void maybeStartAmapColdStartWarmup() {
         // V0.7.4.0：已停用。
         // 旧版会主动 startActivity 打开 com.autonavi.amapautoys 做前台预热，
@@ -684,6 +802,7 @@ public class MainActivity extends Activity {
                 && launcherView.getActiveIndex() == 0
                 && isActivityResumed
                 && !reverseCameraActive
+                && !panoramaForegroundActive
                 && !isExplicitExternalLaunchActive();
     }
 
@@ -911,6 +1030,7 @@ public class MainActivity extends Activity {
         }
         unregisterHomeKeyReceiver();
         unregisterReverseSafetyObserver();
+        stopAmapForegroundSafetyMonitor();
         super.onDestroy();
     }
 
@@ -974,6 +1094,7 @@ public class MainActivity extends Activity {
         super.onResume();
         isActivityResumed = true;
         updateReverseCameraSafetyState("resume");
+        checkAmapForegroundSafety("resume");
         if (isHomePage()) {
             // 回到首页：普通第三方 App 的外部启动保护立即结束，允许立即重新 showmap。
             explicitExternalLaunchUntilMs = 0L;
@@ -1038,6 +1159,22 @@ public class MainActivity extends Activity {
             }
         }
         // 首页 HOME 重入 / 高德悬浮窗自身导致的瞬时 pause 不 closemap。
+        // 但雷达/双闪/倒车自动拉起 AVM 时，MainActivity 也会 pause；延迟读取前台 Activity，
+        // 如果发现全景/车辆画面已在前台，就强制 closemap。
+        if (mainHandler != null) {
+            mainHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    checkAmapForegroundSafety("pause-delay-120");
+                }
+            }, 120L);
+            mainHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    checkAmapForegroundSafety("pause-delay-500");
+                }
+            }, 500L);
+        }
         if (rearAiVisionController != null) {
             rearAiVisionController.stop();
         }
@@ -1066,7 +1203,9 @@ public class MainActivity extends Activity {
             if (isExplicitExternalLaunchActive() || !isHomePage()) {
                 updateAmapFloatingCardVisibility();
             }
-            // 首页失焦不 closemap。高德自己的悬浮窗/导航浮层可能会抢焦点。
+            checkAmapForegroundSafety("window-focus-lost");
+            // 首页失焦不 closemap。高德自己的悬浮窗/导航浮层可能会抢焦点；
+            // 只有检测到 AVM / 车辆画面前台时才 closemap。
         }
         positionRearAiOverlay();
     }

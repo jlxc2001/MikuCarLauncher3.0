@@ -11,8 +11,8 @@ android {
         applicationId 'com.jlxc.mikucarlauncher'
         minSdk 21
         targetSdk 28
-        versionCode 86
-        versionName '0.7.4.2-live2d-fallback-switch'
+        versionCode 87
+        versionName '0.7.4.3-amap-avm-foreground-guard'
     }
 
     // GitHub 网页上传不会自动删除旧文件。
