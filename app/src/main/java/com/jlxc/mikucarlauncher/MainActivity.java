@@ -14,8 +14,10 @@ import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.net.Uri;
 import android.provider.Settings;
+import android.database.ContentObserver;
 import android.widget.TextView;
 import android.os.Bundle;
+import android.os.Handler;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.Window;
@@ -29,6 +31,8 @@ import java.util.Locale;
 
 public class MainActivity extends Activity {
     private static final String TAG_AMAP = "MikuAmap";
+    private static final String ACTION_FORFAN_REVERSING = "com.forfan.operator_reversing";
+    private static final String SETTING_CARLETTER_REVERSE_STATE = "carletter_reserve_state";
     public static final String PREFS = "miku_car_launcher_settings";
     private static boolean sAmapColdStartWarmupDone = false;
     public static final String PREF_CARD1_WIDGET_ID = "card1_widget_id";
@@ -85,6 +89,9 @@ public class MainActivity extends Activity {
     };
     private boolean pendingLive2DHealthCheck = false;
     private BroadcastReceiver homeKeyReceiver;
+    private BroadcastReceiver reverseStateReceiver;
+    private ContentObserver reverseStateObserver;
+    private boolean reverseCameraActive = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -192,7 +199,9 @@ public class MainActivity extends Activity {
 
         setContentView(rootLayout);
         registerHomeKeyReceiver();
-        // V0.7.4.0：高德逻辑重置。Launcher 不再主动拉起/预热高德进程，只管理 showmap / closemap 广播。
+        registerReverseSafetyObserver();
+        updateReverseCameraSafetyState("create");
+        // V0.7.4.1：高德逻辑仍保持最小状态机；倒车安全关闭通过车机系统设置 carletter_reserve_state 精准触发。
 
         rootLayout.post(new Runnable() {
             @Override
@@ -330,6 +339,135 @@ public class MainActivity extends Activity {
                 AmapFloatingCardController.sendCloseMapBroadcast(this);
             } catch (Throwable ignored2) {
             }
+        }
+    }
+
+    private void closeAmapForReverseCamera(String reason) {
+        keepAmapOnHomeKeyUntilMs = 0L;
+        amapHomeGuardUntilMs = 0L;
+        try {
+            if (mapCardContainer != null) {
+                mapCardContainer.setVisibility(View.GONE);
+            }
+            if (amapFloatingCardController != null) {
+                amapFloatingCardController.setHomeVisible(false);
+            } else {
+                AmapFloatingCardController.sendCloseMapBroadcast(this);
+            }
+            Log.i(TAG_AMAP, "closemap reverse reason=" + reason);
+        } catch (Throwable ignored) {
+            try {
+                AmapFloatingCardController.sendCloseMapBroadcast(this);
+            } catch (Throwable ignored2) {
+            }
+        }
+    }
+
+    private void registerReverseSafetyObserver() {
+        try {
+            if (reverseStateObserver == null) {
+                reverseStateObserver = new ContentObserver(new Handler()) {
+                    @Override
+                    public void onChange(boolean selfChange) {
+                        super.onChange(selfChange);
+                        updateReverseCameraSafetyState("settings-observer");
+                    }
+
+                    @Override
+                    public void onChange(boolean selfChange, Uri uri) {
+                        super.onChange(selfChange, uri);
+                        updateReverseCameraSafetyState("settings-observer-uri");
+                    }
+                };
+                getContentResolver().registerContentObserver(
+                        Settings.System.getUriFor(SETTING_CARLETTER_REVERSE_STATE),
+                        false,
+                        reverseStateObserver
+                );
+            }
+        } catch (Throwable t) {
+            Log.w(TAG_AMAP, "register reverse settings observer failed", t);
+        }
+
+        try {
+            if (reverseStateReceiver == null) {
+                reverseStateReceiver = new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context context, Intent intent) {
+                        if (intent == null) {
+                            return;
+                        }
+                        if (ACTION_FORFAN_REVERSING.equals(intent.getAction())) {
+                            Log.i(TAG_AMAP, "receive reversing broadcast extras=" + (intent.getExtras() == null ? "null" : intent.getExtras().toString()));
+                            // 车机广播和 carletter_reserve_state 写入几乎同时发生。
+                            // 为了安全，收到倒车广播先立即 closemap，再短延迟读取设置确认状态。
+                            closeAmapForReverseCamera("forfan-broadcast-immediate");
+                            if (rootLayout != null) {
+                                rootLayout.postDelayed(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        updateReverseCameraSafetyState("forfan-broadcast-delay");
+                                    }
+                                }, 120L);
+                            } else {
+                                updateReverseCameraSafetyState("forfan-broadcast");
+                            }
+                        }
+                    }
+                };
+                registerReceiver(reverseStateReceiver, new IntentFilter(ACTION_FORFAN_REVERSING));
+            }
+        } catch (Throwable t) {
+            Log.w(TAG_AMAP, "register reverse broadcast failed", t);
+        }
+    }
+
+    private void unregisterReverseSafetyObserver() {
+        if (reverseStateReceiver != null) {
+            try {
+                unregisterReceiver(reverseStateReceiver);
+            } catch (Throwable ignored) {
+            }
+            reverseStateReceiver = null;
+        }
+        if (reverseStateObserver != null) {
+            try {
+                getContentResolver().unregisterContentObserver(reverseStateObserver);
+            } catch (Throwable ignored) {
+            }
+            reverseStateObserver = null;
+        }
+    }
+
+    private int readSystemReverseState() {
+        try {
+            return Settings.System.getInt(getContentResolver(), SETTING_CARLETTER_REVERSE_STATE, 0);
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    private void updateReverseCameraSafetyState(String reason) {
+        boolean active = readSystemReverseState() != 0;
+        if (active == reverseCameraActive) {
+            if (active) {
+                closeAmapForReverseCamera(reason + "-still-active");
+            }
+            return;
+        }
+
+        reverseCameraActive = active;
+        Log.i(TAG_AMAP, "reverseCameraActive=" + active + " reason=" + reason);
+
+        if (active) {
+            closeAmapForReverseCamera(reason);
+        } else if (rootLayout != null) {
+            rootLayout.post(new Runnable() {
+                @Override
+                public void run() {
+                    updateAmapFloatingCardVisibility();
+                }
+            });
         }
     }
 
@@ -545,6 +683,7 @@ public class MainActivity extends Activity {
         return launcherView != null
                 && launcherView.getActiveIndex() == 0
                 && isActivityResumed
+                && !reverseCameraActive
                 && !isExplicitExternalLaunchActive();
     }
 
@@ -654,6 +793,7 @@ public class MainActivity extends Activity {
             launcherView.showHomePage();
         }
         updateLive2DVisibility();
+        updateReverseCameraSafetyState("show-home-page");
         updateAmapFloatingCardVisibility();
         if (reloadLive2D) {
             reloadLive2DOnHome();
@@ -770,6 +910,7 @@ public class MainActivity extends Activity {
             AmapFloatingCardController.sendCloseMapBroadcast(this);
         }
         unregisterHomeKeyReceiver();
+        unregisterReverseSafetyObserver();
         super.onDestroy();
     }
 
@@ -832,6 +973,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         isActivityResumed = true;
+        updateReverseCameraSafetyState("resume");
         if (isHomePage()) {
             // 回到首页：普通第三方 App 的外部启动保护立即结束，允许立即重新 showmap。
             explicitExternalLaunchUntilMs = 0L;
@@ -914,6 +1056,7 @@ public class MainActivity extends Activity {
                 backgroundView.invalidate();
             }
             updateLive2DVisibility();
+            updateReverseCameraSafetyState("window-focus");
             positionRearAiOverlay();
             updateAmapFloatingCardVisibility();
             if (isHomePage()) {

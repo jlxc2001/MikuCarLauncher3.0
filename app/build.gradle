@@ -11,8 +11,8 @@ android {
         applicationId 'com.jlxc.mikucarlauncher'
         minSdk 21
         targetSdk 28
-        versionCode 84
-        versionName '0.7.4.0-amap-logic-reset'
+        versionCode 85
+        versionName '0.7.4.1-amap-reverse-setting-guard'
     }
 
     // GitHub 网页上传不会自动删除旧文件。

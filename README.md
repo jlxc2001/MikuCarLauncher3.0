@@ -841,3 +841,11 @@ adb shell am broadcast -a com.autonavi.plus.closemap
 - 首页再次点击首页 / 按 HOME 键只补发 `showmap`，不会先 `closemap`。
 - 暂时禁用基于雷达数组的“vehicle-monitor”自动关闭，避免误判导致高德主悬浮窗反复消失。
 - 高德前台预热设置在界面中标记为停用，仅保留旧配置字段兼容导入导出预设。
+
+
+## V0.7.4.1 高德倒车安全关闭修正
+- 保留 V0.7.4.0 的高德最小状态机：Launcher 不启动、不杀掉、不重启高德，只管理 showmap / closemap 广播。
+- 新增监听车机系统设置 `carletter_reserve_state`，该值为 1 时判定倒车/全景安全画面正在显示。
+- 新增监听 `com.forfan.operator_reversing` 广播，用于辅助触发倒车状态刷新。
+- 倒车状态激活时立即发送 `com.autonavi.plus.closemap`，并暂停首页 showmap；倒车状态恢复 0 后，回到首页时再允许 showmap。
+- 不再使用雷达数组误判，不会阻断普通第三方 App 返回首页。
