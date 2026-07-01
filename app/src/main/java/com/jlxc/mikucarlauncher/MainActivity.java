@@ -192,8 +192,7 @@ public class MainActivity extends Activity {
 
         setContentView(rootLayout);
         registerHomeKeyReceiver();
-        maybeStartAmapColdStartWarmup();
-        startAmapSafetyMonitor();
+        // V0.7.4.0：高德逻辑重置。Launcher 不再主动拉起/预热高德进程，只管理 showmap / closemap 广播。
 
         rootLayout.post(new Runnable() {
             @Override
@@ -287,9 +286,8 @@ public class MainActivity extends Activity {
     }
 
     private void markExplicitExternalLaunch() {
-        explicitExternalLaunchUntilMs = System.currentTimeMillis() + 5000L;
-        // 普通第三方 App 只需要关闭高德，不应该留下 5 秒安全阻断。
-        // 否则从第三方 App 按 HOME 回桌面时，首页会因为安全阻断还没过期而无法重新 showmap。
+        explicitExternalLaunchUntilMs = System.currentTimeMillis() + 2500L;
+        // V0.7.4.0：打开外部 App 前只关闭悬浮窗，不再进入安全阻断，也不干预高德进程/导航状态。
         closeAmapForExternalForeground("explicit-external-launch");
     }
 
@@ -336,117 +334,26 @@ public class MainActivity extends Activity {
     }
 
     private void maybeStartAmapColdStartWarmup() {
-        if (sAmapColdStartWarmupDone || rootLayout == null) {
-            return;
-        }
-        SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
-        if (!sp.getBoolean(AmapFloatingCardController.PREF_AMAP_COLD_START_FRONT_WARMUP_ENABLED, true)) {
-            return;
-        }
-        long now = System.currentTimeMillis();
-        long lastWarmupAt = sp.getLong(AmapFloatingCardController.PREF_AMAP_COLD_START_LAST_WARMUP_AT, 0L);
-        if (lastWarmupAt > 0L && now - lastWarmupAt < AmapFloatingCardController.DEFAULT_COLD_START_WARMUP_COOLDOWN_MS) {
-            Log.i(TAG_AMAP, "skip warmup by cooldown last=" + lastWarmupAt);
-            return;
-        }
-        if (!AmapFloatingCardController.isAmapFloatingInstalled(this)) {
-            return;
-        }
-        Intent launchIntent;
-        try {
-            launchIntent = getPackageManager().getLaunchIntentForPackage(AmapFloatingCardController.AMAP_FLOATING_PACKAGE);
-        } catch (Throwable t) {
-            launchIntent = null;
-        }
-        if (launchIntent == null) {
-            return;
-        }
-
-        int delayMs = sp.getInt(
-                AmapFloatingCardController.PREF_AMAP_COLD_START_RETURN_DELAY_MS,
-                AmapFloatingCardController.DEFAULT_COLD_START_RETURN_DELAY_MS);
-        delayMs = Math.max(0, Math.min(30000, delayMs));
-
-        sAmapColdStartWarmupDone = true;
-        sp.edit().putLong(AmapFloatingCardController.PREF_AMAP_COLD_START_LAST_WARMUP_AT, System.currentTimeMillis()).apply();
-        amapColdStartWarmupUntilMs = System.currentTimeMillis() + delayMs + 12000L;
-        keepAmapOnHomeKeyUntilMs = Math.max(keepAmapOnHomeKeyUntilMs, amapColdStartWarmupUntilMs);
-        extendAmapHomeGuard(delayMs + 35000L);
-
-        try {
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(launchIntent);
-        } catch (Throwable ignored) {
-            return;
-        }
-
-        rootLayout.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                bringLauncherBackAfterAmapWarmup();
-            }
-        }, delayMs);
+        // V0.7.4.0：已停用。
+        // 旧版会主动 startActivity 打开 com.autonavi.amapautoys 做前台预热，
+        // 实车反馈会打断高德导航状态，甚至导致路线被清空。Launcher 不再主动打开高德 App。
     }
 
     private void bringLauncherBackAfterAmapWarmup() {
-        bringLauncherToFrontForAmapWarmup();
-        if (rootLayout != null) {
-            rootLayout.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    showHomePage(false);
-                    updateLive2DVisibility();
-                    updateAmapFloatingCardVisibility();
-                    ensureAmapMainFloatingWindowLoaded(false);
-                }
-            }, 500L);
-
-            // 部分车机上高德第一次加载资源完成后会再次抢到前台，延迟多拉回两次并补发 showmap。
-            rootLayout.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    if (shouldKeepAmapDuringColdStartWarmup()) {
-                        bringLauncherToFrontForAmapWarmup();
-                        showHomePage(false);
-                        ensureAmapMainFloatingWindowLoaded(false);
-                    }
-                }
-            }, 2500L);
-            rootLayout.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    if (shouldKeepAmapDuringColdStartWarmup()) {
-                        bringLauncherToFrontForAmapWarmup();
-                        showHomePage(false);
-                        ensureAmapMainFloatingWindowLoaded(false);
-                    }
-                }
-            }, 5600L);
-        }
+        // V0.7.4.0：已停用高德前台预热。
     }
 
     private void bringLauncherToFrontForAmapWarmup() {
-        try {
-            Intent back = new Intent(this, MainActivity.class);
-            back.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                    | Intent.FLAG_ACTIVITY_CLEAR_TOP
-                    | Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
-            startActivity(back);
-        } catch (Throwable ignored) {
-        }
+        // V0.7.4.0：已停用高德前台预热。
     }
 
     private void reloadHomeSurfaceOnHomeKey() {
-        markHomeKeyTransientForAmap();
-        extendAmapHomeGuard(30000L);
-        // 从第三方 App 按 HOME 回桌面后，外部启动保护已经完成，允许首页重新显示高德。
+        // V0.7.4.0：HOME / 再点首页只做“首页恢复 + Live2D 重载 + showmap 补发”。
+        // 绝不 closemap 后再 show，也绝不重启/拉起/杀掉高德 App，避免正在导航的路线被打断。
         explicitExternalLaunchUntilMs = 0L;
         showHomePage(false);
         reloadLive2DOnHome();
         updateAmapFloatingCardVisibility();
-        // 首页/HOME 自修复只补发 showmap，不再先 closemap。
-        // 先 close 再 show 在部分高德版本上会导致主悬浮窗成功出现后又被关闭。
         ensureAmapMainFloatingWindowLoaded(false);
     }
 
@@ -459,7 +366,7 @@ public class MainActivity extends Activity {
             public void run() {
                 updateAmapFloatingCardVisibility();
                 if (amapFloatingCardController != null && shouldShowAmapFloatingCardOnHome()) {
-                    amapFloatingCardController.ensureMapWindowVisibleAggressively(closeFirst);
+                    amapFloatingCardController.reloadMapWindow();
                 }
             }
         });
@@ -538,66 +445,26 @@ public class MainActivity extends Activity {
 
 
     private void startAmapSafetyMonitor() {
-        if (rootLayout == null || amapSafetyMonitorStarted) {
-            return;
-        }
-        amapSafetyMonitorStarted = true;
-        rootLayout.removeCallbacks(amapSafetyMonitorRunnable);
-        rootLayout.postDelayed(amapSafetyMonitorRunnable, 500L);
+        // V0.7.4.0：不再启动持续安全阻断监控，避免车辆数据/雷达误判导致首页高德被反复 close。
+        // 全景/车辆界面通过显式点击入口关闭高德；后续若要做倒车自动关闭，需要接入明确的倒车档位字段。
     }
 
     private void stopAmapSafetyMonitor() {
-        amapSafetyMonitorStarted = false;
-        if (rootLayout != null) {
-            rootLayout.removeCallbacks(amapSafetyMonitorRunnable);
-        }
+        // V0.7.4.0：无持续监控。
     }
 
     private boolean isAmapSafetyBlocked() {
-        if (System.currentTimeMillis() < amapSafetyBlockUntilMs) {
-            return true;
-        }
-        return isVehiclePanoramaOrReverseLikely();
+        return false;
     }
 
     private void blockAmapForSafety(String reason, long durationMs) {
-        amapSafetyBlockUntilMs = Math.max(amapSafetyBlockUntilMs, System.currentTimeMillis() + Math.max(800L, durationMs));
-        keepAmapOnHomeKeyUntilMs = 0L;
-        amapHomeGuardUntilMs = 0L;
-        if (amapFloatingCardController != null) {
-            amapFloatingCardController.setHomeVisible(false);
-        } else {
-            AmapFloatingCardController.sendCloseMapBroadcast(this);
-        }
-        if (mapCardContainer != null) {
-            mapCardContainer.setVisibility(View.GONE);
-        }
-        Log.i(TAG_AMAP, "closemap safety reason=" + reason + " blockMs=" + durationMs);
+        // V0.7.4.0：安全场景只 closemap，不保留任何阻断倒计时，避免普通 HOME 返回后无法恢复悬浮窗。
+        closeAmapForExternalForeground("safety-" + reason);
     }
 
     private void checkAmapSafetySuppression(String reason) {
-        if (isVehiclePanoramaOrReverseLikely()) {
-            blockAmapForSafety("vehicle-" + reason, 1800L);
-            return;
-        }
-
-        String topPackage = getTopPackageCompat();
-        if (topPackage == null || topPackage.length() == 0) {
-            return;
-        }
-
-        if (isOurPackage(topPackage) || AmapFloatingCardController.AMAP_FLOATING_PACKAGE.equals(topPackage)) {
-            return;
-        }
-
-        if (isKnownPanoramaOrVehicleForegroundPackage(topPackage)) {
-            blockAmapForSafety("foreground-" + topPackage + "-" + reason, 5000L);
-            return;
-        }
-
-        // 普通第三方 App：只关闭，不进入安全阻断倒计时。
-        // 否则从第三方 App 按 HOME 返回首页时，showmap 会被上一轮 5 秒阻断吃掉。
-        closeAmapForExternalForeground("foreground-" + topPackage + "-" + reason);
+        // V0.7.4.0：不再基于雷达数组/普通第三方前台做自动 close。
+        // 原逻辑在实车上会把普通返回首页也当作安全阻断，造成悬浮窗无法恢复。
     }
 
     private String getTopPackageCompat() {
@@ -628,27 +495,12 @@ public class MainActivity extends Activity {
     }
 
     private boolean isVehiclePanoramaOrReverseLikely() {
-        try {
-            VehicleDataProvider.Snapshot s = launcherView == null ? null : launcherView.getVehicleSnapshot();
-            if (s == null || !s.valid) {
-                return false;
-            }
-            return hasActiveRadar(s.frontRadar) || hasActiveRadar(s.rearRadar);
-        } catch (Throwable ignored) {
-            return false;
-        }
+        // V0.7.4.0：暂时禁用雷达数组推断。
+        // 之前只要雷达值为正就 closemap，实车上会导致首页高德被 vehicle-monitor 反复关闭。
+        return false;
     }
 
     private boolean hasActiveRadar(int[] values) {
-        if (values == null || values.length == 0) {
-            return false;
-        }
-        for (int v : values) {
-            // 大多数车机雷达空值是 0 或负数；只要有正值，就认为此时存在泊车/靠近物体提示，安全优先关闭高德。
-            if (v > 0) {
-                return true;
-            }
-        }
         return false;
     }
 
@@ -662,23 +514,6 @@ public class MainActivity extends Activity {
 
         boolean shouldShow = shouldShowAmapFloatingCardOnHome();
         if (!shouldShow) {
-            if (isAmapSafetyBlocked()) {
-                mapCardContainer.setVisibility(View.GONE);
-                if (amapFloatingCardController != null) {
-                    amapFloatingCardController.setHomeVisible(false);
-                }
-                return;
-            }
-            if (shouldHoldAmapDuringTemporaryHomeTransition()) {
-                // HOME 重入 / 高德预热回桌面的短暂失焦阶段，不发送 closemap。
-                // 否则会出现“悬浮窗成功出现，不到一秒又自动消失”。
-                positionMapCardContainer();
-                mapCardContainer.setVisibility(View.VISIBLE);
-                if (amapFloatingCardController != null && AmapFloatingCardController.isAmapFloatingInstalled(this)) {
-                    amapFloatingCardController.setHomeVisible(true);
-                }
-                return;
-            }
             mapCardContainer.setVisibility(View.GONE);
             if (amapFloatingCardController != null) {
                 amapFloatingCardController.setHomeVisible(false);
@@ -707,43 +542,34 @@ public class MainActivity extends Activity {
     }
 
     private boolean shouldShowAmapFloatingCardOnHome() {
-        boolean homePage = launcherView != null && launcherView.getActiveIndex() == 0;
-        // 不再要求 hasWindowFocusNow：高德自己的 WindowManager 悬浮窗/导航浮层可能会造成 Launcher 瞬时失焦。
-        // 如果因为失焦就 closemap，会出现“悬浮窗出现几秒后自动消失”。真正离开首页/打开外部 App 由 onPause、菜单和显式启动逻辑关闭。
-        return homePage && isActivityResumed && !isExplicitExternalLaunchActive() && !isAmapSafetyBlocked();
+        return launcherView != null
+                && launcherView.getActiveIndex() == 0
+                && isActivityResumed
+                && !isExplicitExternalLaunchActive();
     }
 
     private boolean shouldHoldAmapDuringTemporaryHomeTransition() {
-        return isHomePage()
-                && !isExplicitExternalLaunchActive()
-                && !isAmapSafetyBlocked()
-                && (shouldKeepAmapDuringHomeKeyTransient()
-                || shouldKeepAmapDuringColdStartWarmup()
-                || shouldKeepAmapDuringHomeGuard());
+        return false;
     }
 
     private void markHomeKeyTransientForAmap() {
-        if (isHomePage()) {
-            // 部分车机实体 HOME 键会造成较长的瞬时失焦/重入，保护时间加长，避免首页悬浮高德被误关。
-            keepAmapOnHomeKeyUntilMs = System.currentTimeMillis() + 30000L;
-            extendAmapHomeGuard(30000L);
-        }
+        // V0.7.4.0：已停用首页守护倒计时。HOME 重入直接补发 showmap。
     }
 
     private boolean shouldKeepAmapDuringHomeKeyTransient() {
-        return isHomePage() && System.currentTimeMillis() <= keepAmapOnHomeKeyUntilMs;
+        return false;
     }
 
     private boolean shouldKeepAmapDuringColdStartWarmup() {
-        return System.currentTimeMillis() <= amapColdStartWarmupUntilMs;
+        return false;
     }
 
     private void extendAmapHomeGuard(long durationMs) {
-        amapHomeGuardUntilMs = Math.max(amapHomeGuardUntilMs, System.currentTimeMillis() + Math.max(0L, durationMs));
+        // V0.7.4.0：已停用首页守护倒计时。
     }
 
     private boolean shouldKeepAmapDuringHomeGuard() {
-        return isHomePage() && System.currentTimeMillis() <= amapHomeGuardUntilMs;
+        return false;
     }
 
     private boolean isExplicitExternalLaunchActive() {
@@ -814,7 +640,7 @@ public class MainActivity extends Activity {
         super.onNewIntent(intent);
         // 作为默认 Launcher 时，系统 HOME 可能以新 Intent 形式拉起已有 singleTask。
         // 无论是首页重复 HOME 还是从其它 App 回桌面，都执行一次首页自修复。
-        markHomeKeyTransientForAmap();
+        explicitExternalLaunchUntilMs = 0L;
         showHomePage(false);
         reloadHomeSurfaceOnHomeKey();
     }
@@ -827,7 +653,6 @@ public class MainActivity extends Activity {
         if (launcherView != null) {
             launcherView.showHomePage();
         }
-        extendAmapHomeGuard(30000L);
         updateLive2DVisibility();
         updateAmapFloatingCardVisibility();
         if (reloadLive2D) {
@@ -898,7 +723,8 @@ public class MainActivity extends Activity {
                 }
                 String reason = intent.getStringExtra("reason");
                 if ("homekey".equals(reason)) {
-                    markHomeKeyTransientForAmap();
+                    // HOME 重入：只恢复首页并补发 showmap，不 closemap。
+                    explicitExternalLaunchUntilMs = 0L;
                     showHomePage(false);
                     reloadHomeSurfaceOnHomeKey();
                 } else if ("recentapps".equals(reason)) {
@@ -929,11 +755,8 @@ public class MainActivity extends Activity {
         super.onUserLeaveHint();
         if (isExplicitExternalLaunchActive() || !isHomePage()) {
             closeAmapFloatingImmediately();
-        } else {
-            // 实体 HOME / 默认 Launcher 重入会先触发 onUserLeaveHint 或 onPause，
-            // 此时不能 closemap，否则高德主悬浮窗会刚出现又被自己关掉。
-            markHomeKeyTransientForAmap();
         }
+        // 首页按 HOME 不 closemap；等 onNewIntent / homekey 广播回到首页后补发 showmap。
     }
 
     @Override
@@ -1010,12 +833,8 @@ public class MainActivity extends Activity {
         super.onResume();
         isActivityResumed = true;
         if (isHomePage()) {
-            // 已经回到首页：普通第三方 App 的外部启动保护立即结束，允许重新 showmap。
+            // 回到首页：普通第三方 App 的外部启动保护立即结束，允许立即重新 showmap。
             explicitExternalLaunchUntilMs = 0L;
-            if (!isVehiclePanoramaOrReverseLikely()) {
-                amapSafetyBlockUntilMs = 0L;
-            }
-            extendAmapHomeGuard(30000L);
         }
         keepFullscreen();
         if (appWidgetHost != null) {
@@ -1040,7 +859,6 @@ public class MainActivity extends Activity {
         if (rearAiVisionController != null) {
             rearAiVisionController.start();
         }
-        startAmapSafetyMonitor();
         if (rootLayout != null) {
             rootLayout.post(new Runnable() {
                 @Override
@@ -1076,19 +894,8 @@ public class MainActivity extends Activity {
             } else {
                 AmapFloatingCardController.sendCloseMapBroadcast(this);
             }
-        } else {
-            // 首页 HOME 重入 / 高德悬浮窗自身造成的短暂前后台切换，不立即 closemap。
-            // 但如果是倒车/全景/360 等安全画面被系统拉起，会在短延迟检查中强制 closemap。
-            markHomeKeyTransientForAmap();
-            if (rootLayout != null) {
-                rootLayout.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        checkAmapSafetySuppression("onPause");
-                    }
-                }, 180L);
-            }
         }
+        // 首页 HOME 重入 / 高德悬浮窗自身导致的瞬时 pause 不 closemap。
         if (rearAiVisionController != null) {
             rearAiVisionController.stop();
         }
@@ -1115,19 +922,8 @@ public class MainActivity extends Activity {
         } else {
             if (isExplicitExternalLaunchActive() || !isHomePage()) {
                 updateAmapFloatingCardVisibility();
-            } else {
-                // 高德悬浮窗/导航小浮窗可能会让 Launcher 瞬时失焦。
-                // 首页失焦不立即 closemap，但随后检查前台是否已经切到倒车/全景/360 等安全画面。
-                markHomeKeyTransientForAmap();
-                if (rootLayout != null) {
-                    rootLayout.postDelayed(new Runnable() {
-                        @Override
-                        public void run() {
-                            checkAmapSafetySuppression("windowFocusLost");
-                        }
-                    }, 180L);
-                }
             }
+            // 首页失焦不 closemap。高德自己的悬浮窗/导航浮层可能会抢焦点。
         }
         positionRearAiOverlay();
     }

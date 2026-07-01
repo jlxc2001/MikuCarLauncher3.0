@@ -828,3 +828,16 @@ adb shell am broadcast -a com.autonavi.plus.closemap
 - 倒车 / 全景 / 360 / 车辆界面仍然会进入安全阻断，防止高德遮挡泊车画面。
 - 高德前台预热增加 30 分钟冷却时间，避免从第三方 App 回桌面或 Activity 重建时反复拉起高德主界面。
 - 新增 MikuAmap 日志标签：会输出 showmap / closemap / safety close / external close，后续 logcat 更容易判断是谁关闭了悬浮窗。
+
+
+## V0.7.4.0 高德逻辑重置
+
+本版把之前逐步叠加的高德预热、首页守护、安全阻断状态机全部降级为最小广播模型，避免干扰高德自己的导航状态。
+
+- Launcher 不再主动 `startActivity` 打开 `com.autonavi.amapautoys` 做前台预热。
+- Launcher 不再 force-stop / kill / stop 高德进程。
+- 首页显示时只发送 `com.autonavi.plus.showmap`。
+- 离开首页、打开外部 App、进入应用页/我的页/设置页时只发送 `com.autonavi.plus.closemap`。
+- 首页再次点击首页 / 按 HOME 键只补发 `showmap`，不会先 `closemap`。
+- 暂时禁用基于雷达数组的“vehicle-monitor”自动关闭，避免误判导致高德主悬浮窗反复消失。
+- 高德前台预热设置在界面中标记为停用，仅保留旧配置字段兼容导入导出预设。

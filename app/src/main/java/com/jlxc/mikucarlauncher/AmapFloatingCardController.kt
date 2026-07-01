@@ -64,8 +64,8 @@ class AmapFloatingCardController(
 
         private const val MIN_SCALE_PERCENT = 10
         private const val MAX_SCALE_PERCENT = 300
-        private val AMAP_PASSIVE_SHOW_RETRY_DELAYS_MS = longArrayOf(350L, 900L, 1800L, 3000L, 5200L, 7800L)
-        private val AMAP_HOME_GUARANTEE_SHOW_DELAYS_MS = longArrayOf(0L, 260L, 700L, 1250L, 2100L, 3400L, 5200L, 7600L, 10500L, 14000L, 18000L, 23000L)
+        // V0.7.4.0：高德逻辑重置，只保留轻量 showmap 补发，不再做长时间守护/预热状态机。
+        private val AMAP_PASSIVE_SHOW_RETRY_DELAYS_MS = longArrayOf(300L, 900L, 1800L)
 
 
         data class FloatingCardSettings(
@@ -178,13 +178,9 @@ class AmapFloatingCardController(
         fun getSettingsSummary(context: Context): String {
             val s = readSettings(context)
             val dpiText = if (s.dpi > 0) "${s.dpi}" else "不强制"
-            val sp = context.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
-            val warmupEnabled = sp.getBoolean(PREF_AMAP_COLD_START_FRONT_WARMUP_ENABLED, true)
-            val warmupDelay = sp.getInt(PREF_AMAP_COLD_START_RETURN_DELAY_MS, DEFAULT_COLD_START_RETURN_DELAY_MS).coerceIn(0, 30000)
-            val warmupText = if (warmupEnabled) "高德预热 ${warmupDelay / 1000f}s" else "高德预热关闭"
             return "内缩 ${s.insetDp}dp，偏移 X ${s.xOffsetPx}px / Y ${s.yOffsetPx}px，" +
                     "缩放 ${s.widthScalePercent}%×${s.heightScalePercent}%，" +
-                    "强制 ${s.forceWidthPx}×${s.forceHeightPx}px，DPI $dpiText，$warmupText"
+                    "强制 ${s.forceWidthPx}×${s.forceHeightPx}px，DPI $dpiText，高德预热已停用"
         }
 
         @JvmStatic
@@ -267,15 +263,11 @@ class AmapFloatingCardController(
      * 这样可以避免设置页 / 应用抽屉 / 我的页面 / 切后台后又被 onResume 或焦点恢复误拉起。
      */
     fun setHomeVisible(visible: Boolean) {
-        val becameVisible = visible && !allowShowOnHome
+        val wasAllowed = allowShowOnHome
         allowShowOnHome = visible
         if (visible) {
             postUpdateMapWindow()
-            if (becameVisible) {
-                // 首页刚恢复时做一轮“保障补发”，解决高德已在前台/导航浮层存在但主悬浮窗偶发不加载的问题。
-                scheduleHomeGuaranteeShowBurst(false)
-            }
-        } else {
+        } else if (wasAllowed || isShown) {
             closeMap()
         }
     }
@@ -307,13 +299,13 @@ class AmapFloatingCardController(
         if (!allowShowOnHome) {
             return
         }
+        // 只补发 showmap，不 closemap，不启动高德进程。
         isShown = false
         lastRect = null
         lastDpi = -1
         hasTriedWakeAmapProcess = false
         pendingWakeRetry = false
         forceShowCurrentMapWindow()
-        scheduleHomeGuaranteeShowBurst(false)
     }
 
     /**
@@ -321,18 +313,9 @@ class AmapFloatingCardController(
      * 用于：开机高德预热返回桌面、首页再次点击首页、实体 HOME 重入、导航过程中高德已有其它小浮窗但主悬浮窗未恢复。
      */
     fun ensureMapWindowVisibleAggressively(closeFirst: Boolean) {
-        if (!allowShowOnHome) {
-            return
-        }
-        if (closeFirst) {
-            // 历史版本这里会先 closemap 再 showmap。实车测试发现这会让高德主悬浮窗成功出现后又自动消失。
-            // 现在 closeFirst 只重置去重状态，不再真正发送 closemap；离开首页时仍由 setHomeVisible(false) 负责关闭。
-            isShown = false
-            lastRect = null
-            lastDpi = -1
-        }
-        forceShowCurrentMapWindow()
-        scheduleHomeGuaranteeShowBurst(false)
+        // V0.7.4.0：保留方法兼容旧调用，但行为降级为单次 showmap。
+        // closeFirst 参数不再触发 closemap，避免打断高德导航状态。
+        reloadMapWindow()
     }
 
     fun postUpdateMapWindow() {
@@ -364,8 +347,7 @@ class AmapFloatingCardController(
         val firstShow = !isShown
         sendShowMapIfNeeded(rect, settings.dpi, false)
 
-        // 冷启动兼容：不再主动 startActivity 打开高德前台，避免“Launcher → 高德 → Launcher → 高德”回弹。
-        // 这里只做被动补发 showmap。若高德端有静态 Receiver，可被后台拉起；若没有，也不会把高德 Activity 顶到前台。
+        // 首页首次显示时轻量补发几次 showmap，绝不 closemap / startActivity / force-stop 高德。
         if (firstShow && shouldSchedulePassiveAmapShowRetries()) {
             schedulePassiveAmapShowRetries(rect, settings.dpi)
         }
@@ -413,26 +395,6 @@ class AmapFloatingCardController(
                 }
                 if (index == AMAP_PASSIVE_SHOW_RETRY_DELAYS_MS.lastIndex) {
                     pendingWakeRetry = false
-                }
-            }, delayMs)
-        }
-    }
-
-    private fun scheduleHomeGuaranteeShowBurst(closeFirst: Boolean) {
-        if (!allowShowOnHome) {
-            return
-        }
-        if (closeFirst) {
-            // 只重置本地状态，不再主动 close。
-            // 主动 close 会和高德自身导航浮窗/主悬浮窗状态竞争，导致窗口闪现后消失。
-            isShown = false
-            lastRect = null
-            lastDpi = -1
-        }
-        AMAP_HOME_GUARANTEE_SHOW_DELAYS_MS.forEach { delayMs ->
-            mainHandler.postDelayed({
-                if (allowShowOnHome) {
-                    forceShowCurrentMapWindow()
                 }
             }, delayMs)
         }
