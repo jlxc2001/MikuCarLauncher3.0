@@ -124,7 +124,7 @@ public class AmapFloatingCardSettingsActivity extends Activity {
         root.addView(coldStartWarmupCheck, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(54)
         ));
-        coldStartDelaySecondsEdit = addEdit(root, "首次启动高德预热后返回桌面延迟 秒，默认 5", false);
+        coldStartDelaySecondsEdit = addEdit(root, "首次启动高德预热后返回桌面延迟 秒，默认 8", false);
 
         Button saveAndTest = addButton(root, "保存并回首页测试显示悬浮地图");
         saveAndTest.setOnClickListener(new View.OnClickListener() {

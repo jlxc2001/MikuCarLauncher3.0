@@ -11,8 +11,8 @@ android {
         applicationId 'com.jlxc.mikucarlauncher'
         minSdk 21
         targetSdk 28
-        versionCode 77
-        versionName '0.7.3.3-app-refresh-common-key-icon-search'
+        versionCode 79
+        versionName '0.7.3.5-amap-main-window-guard'
     }
 
     // GitHub 网页上传不会自动删除旧文件。

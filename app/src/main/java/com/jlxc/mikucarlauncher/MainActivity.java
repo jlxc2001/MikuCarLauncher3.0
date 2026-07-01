@@ -183,24 +183,27 @@ public class MainActivity extends Activity {
     private void handleMenuClick(int index) {
         switch (index) {
             case 0: // 首页
-                // v64：从其它页面回首页不重载 Live2D，避免人物闪一下。
-                // 如果已经在首页，再点一次首页按钮，才作为“手动修复”重载 Live2D。
+                // 在首页再次点击“首页”：作为手动修复，重载高德悬浮窗和 Live2D。
                 if (isHomePage()) {
-                    reloadLive2DOnHome();
+                    reloadHomeSurfaceOnHomeKey();
                 } else {
                     showHomePage(false);
+                    reloadHomeSurfaceOnHomeKey();
                 }
                 break;
 
             case 1: // 导航
+                closeAmapFloatingImmediately();
                 launchSelectedPackage("nav_package", "com.autonavi.amapauto", "导航软件未找到，请到 我的 → 车机桌面设置 里选择默认导航软件");
                 break;
 
             case 2: // 音乐
+                closeAmapFloatingImmediately();
                 launchMusic();
                 break;
 
             case 3: // 车辆
+                closeAmapFloatingImmediately();
                 launchComponent(
                         "com.ts.MainUI",
                         "com.ts.can.audi.xhd.CanAudiWithCDExdActivity",
@@ -209,6 +212,7 @@ public class MainActivity extends Activity {
                 break;
 
             case 4: // 全景
+                closeAmapFloatingImmediately();
                 launchComponent(
                         "com.baony.avm360",
                         "com.baony.ui.activity.AVMBVActivity",
@@ -217,12 +221,14 @@ public class MainActivity extends Activity {
                 break;
 
             case 5: // 应用
+                closeAmapFloatingImmediately();
                 if (launcherView != null) {
                     launcherView.invalidate();
                 }
                 break;
 
             case 6: // 我的
+                closeAmapFloatingImmediately();
                 if (launcherView != null) {
                     launcherView.invalidate();
                 }
@@ -258,6 +264,25 @@ public class MainActivity extends Activity {
 
     private void markExplicitExternalLaunch() {
         explicitExternalLaunchUntilMs = System.currentTimeMillis() + 5000L;
+        closeAmapFloatingImmediately();
+    }
+
+    private void closeAmapFloatingImmediately() {
+        try {
+            if (mapCardContainer != null) {
+                mapCardContainer.setVisibility(View.GONE);
+            }
+            if (amapFloatingCardController != null) {
+                amapFloatingCardController.setHomeVisible(false);
+            } else {
+                AmapFloatingCardController.sendCloseMapBroadcast(this);
+            }
+        } catch (Throwable ignored) {
+            try {
+                AmapFloatingCardController.sendCloseMapBroadcast(this);
+            } catch (Throwable ignored2) {
+            }
+        }
     }
 
     private void maybeStartAmapColdStartWarmup() {
@@ -287,7 +312,7 @@ public class MainActivity extends Activity {
         delayMs = Math.max(0, Math.min(30000, delayMs));
 
         sAmapColdStartWarmupDone = true;
-        amapColdStartWarmupUntilMs = System.currentTimeMillis() + delayMs + 3000L;
+        amapColdStartWarmupUntilMs = System.currentTimeMillis() + delayMs + 12000L;
         keepAmapOnHomeKeyUntilMs = Math.max(keepAmapOnHomeKeyUntilMs, amapColdStartWarmupUntilMs);
 
         try {
@@ -306,6 +331,43 @@ public class MainActivity extends Activity {
     }
 
     private void bringLauncherBackAfterAmapWarmup() {
+        bringLauncherToFrontForAmapWarmup();
+        if (rootLayout != null) {
+            rootLayout.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    showHomePage(false);
+                    updateLive2DVisibility();
+                    updateAmapFloatingCardVisibility();
+                    ensureAmapMainFloatingWindowLoaded(true);
+                }
+            }, 500L);
+
+            // 部分车机上高德第一次加载资源完成后会再次抢到前台，延迟多拉回两次并补发 showmap。
+            rootLayout.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (shouldKeepAmapDuringColdStartWarmup()) {
+                        bringLauncherToFrontForAmapWarmup();
+                        showHomePage(false);
+                        ensureAmapMainFloatingWindowLoaded(false);
+                    }
+                }
+            }, 2500L);
+            rootLayout.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (shouldKeepAmapDuringColdStartWarmup()) {
+                        bringLauncherToFrontForAmapWarmup();
+                        showHomePage(false);
+                        ensureAmapMainFloatingWindowLoaded(false);
+                    }
+                }
+            }, 5600L);
+        }
+    }
+
+    private void bringLauncherToFrontForAmapWarmup() {
         try {
             Intent back = new Intent(this, MainActivity.class);
             back.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
@@ -315,16 +377,29 @@ public class MainActivity extends Activity {
             startActivity(back);
         } catch (Throwable ignored) {
         }
-        if (rootLayout != null) {
-            rootLayout.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    showHomePage(false);
-                    updateLive2DVisibility();
-                    updateAmapFloatingCardVisibility();
-                }
-            }, 500L);
+    }
+
+    private void reloadHomeSurfaceOnHomeKey() {
+        markHomeKeyTransientForAmap();
+        showHomePage(false);
+        reloadLive2DOnHome();
+        updateAmapFloatingCardVisibility();
+        ensureAmapMainFloatingWindowLoaded(true);
+    }
+
+    private void ensureAmapMainFloatingWindowLoaded(final boolean closeFirst) {
+        if (rootLayout == null || amapFloatingCardController == null || !isHomePage()) {
+            return;
         }
+        rootLayout.post(new Runnable() {
+            @Override
+            public void run() {
+                updateAmapFloatingCardVisibility();
+                if (amapFloatingCardController != null && shouldShowAmapFloatingCardOnHome()) {
+                    amapFloatingCardController.ensureMapWindowVisibleAggressively(closeFirst);
+                }
+            }
+        });
     }
 
     private boolean launchPackage(String pkg) {
@@ -437,12 +512,7 @@ public class MainActivity extends Activity {
 
     private boolean shouldShowAmapFloatingCardOnHome() {
         boolean homePage = launcherView != null && launcherView.getActiveIndex() == 0;
-        if (!homePage) {
-            return false;
-        }
-        return (isActivityResumed && hasWindowFocusNow)
-                || shouldKeepAmapDuringHomeKeyTransient()
-                || shouldKeepAmapDuringColdStartWarmup();
+        return homePage && isActivityResumed && hasWindowFocusNow;
     }
 
     private void markHomeKeyTransientForAmap() {
@@ -527,9 +597,9 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         // 作为默认 Launcher 时，系统 HOME 可能以新 Intent 形式拉起已有 singleTask。
-        // 如果本来就在首页，认为这是 HOME 的瞬时重入，避免因此关闭高德悬浮窗。
-        markHomeKeyTransientForAmap();
+        // 无论是首页重复 HOME 还是从其它 App 回桌面，都执行一次首页自修复。
         showHomePage(false);
+        reloadHomeSurfaceOnHomeKey();
     }
 
     public void showHomePage() {
@@ -610,9 +680,10 @@ public class MainActivity extends Activity {
                 }
                 String reason = intent.getStringExtra("reason");
                 if ("homekey".equals(reason)) {
-                    markHomeKeyTransientForAmap();
                     showHomePage(false);
+                    reloadHomeSurfaceOnHomeKey();
                 } else if ("recentapps".equals(reason)) {
+                    closeAmapFloatingImmediately();
                     showHomePage(false);
                 }
             }
@@ -637,8 +708,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onUserLeaveHint() {
         super.onUserLeaveHint();
-        if (isHomePage() && !isExplicitExternalLaunchActive()) {
-            markHomeKeyTransientForAmap();
+        if (isExplicitExternalLaunchActive()) {
+            closeAmapFloatingImmediately();
+        } else if (!(shouldKeepAmapDuringHomeKeyTransient() || shouldKeepAmapDuringColdStartWarmup())) {
+            closeAmapFloatingImmediately();
         }
     }
 
@@ -672,8 +745,8 @@ public class MainActivity extends Activity {
         // DOWN / UP 全部消费，避免部分车机在 UP 阶段继续交给系统导致回到上一个 App。
         if (event == null || event.getAction() == KeyEvent.ACTION_DOWN) {
             if (HomeKeyHelper.isHomeKey(keyCode)) {
-                markHomeKeyTransientForAmap();
                 showHomePage(false);
+                reloadHomeSurfaceOnHomeKey();
             } else if (HomeKeyHelper.isBackKey(keyCode)) {
                 if (!isHomePage()) {
                     showHomePage(false);
@@ -744,6 +817,9 @@ public class MainActivity extends Activity {
                 public void run() {
                     updateLive2DVisibility();
                     updateAmapFloatingCardVisibility();
+                    if (isHomePage()) {
+                        ensureAmapMainFloatingWindowLoaded(false);
+                    }
                     positionRearAiOverlay();
                 }
             });
@@ -764,10 +840,12 @@ public class MainActivity extends Activity {
         if (launcherView != null) {
             launcherView.setTurnSignalAudioAllowed(false);
         }
-        if (amapFloatingCardController != null) {
-            if (!shouldKeepAmapDuringHomeKeyTransient() && !shouldKeepAmapDuringColdStartWarmup()) {
-                amapFloatingCardController.onPause();
-            }
+        if (shouldKeepAmapDuringHomeKeyTransient() || shouldKeepAmapDuringColdStartWarmup()) {
+            // 首页实体 HOME 重入 / 高德预热期间不主动 closemap，避免刚显示出的主悬浮窗被瞬时 onPause 关掉。
+        } else if (amapFloatingCardController != null) {
+            amapFloatingCardController.onPause();
+        } else {
+            AmapFloatingCardController.sendCloseMapBroadcast(this);
         }
         if (rearAiVisionController != null) {
             rearAiVisionController.stop();
@@ -788,8 +866,15 @@ public class MainActivity extends Activity {
             }
             updateLive2DVisibility();
             positionRearAiOverlay();
+            updateAmapFloatingCardVisibility();
+            if (isHomePage()) {
+                ensureAmapMainFloatingWindowLoaded(false);
+            }
+        } else {
+            if (!(shouldKeepAmapDuringHomeKeyTransient() || shouldKeepAmapDuringColdStartWarmup())) {
+                updateAmapFloatingCardVisibility();
+            }
         }
-        updateAmapFloatingCardVisibility();
         positionRearAiOverlay();
     }
 }

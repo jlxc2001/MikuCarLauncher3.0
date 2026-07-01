@@ -89,13 +89,21 @@ public class HiddenAppsActivity extends Activity {
                 @Override
                 public void onClick(View view) {
                     Set<String> current = new HashSet<String>(sp.getStringSet("hidden_apps", new HashSet<String>()));
+                    boolean nowHidden;
                     if (current.contains(pkg)) {
                         current.remove(pkg);
+                        nowHidden = false;
                     } else {
                         current.add(pkg);
+                        nowHidden = true;
                     }
+                    hidden.clear();
+                    hidden.addAll(current);
                     sp.edit().putStringSet("hidden_apps", current).apply();
-                    buildUi();
+                    row.setText(makeRowText(label, pkg, nowHidden));
+                    row.setBackgroundColor(nowHidden ? Color.rgb(225, 231, 241) : Color.WHITE);
+                    IconPackManager.bumpVersion(HiddenAppsActivity.this);
+                    AppDrawerCacheManager.requestLauncherRefresh(HiddenAppsActivity.this);
                 }
             });
 

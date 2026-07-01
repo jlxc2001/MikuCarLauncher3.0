@@ -307,6 +307,14 @@ public class DesktopSettingsActivity extends Activity {
             }
         });
 
+        Button presetBackup = addButton(root, "预设备份 / 导入备份");
+        presetBackup.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                startActivity(new Intent(DesktopSettingsActivity.this, PresetBackupActivity.class));
+            }
+        });
+
         Button back = addButton(root, "返回我的");
         back.setOnClickListener(new View.OnClickListener() {
             @Override

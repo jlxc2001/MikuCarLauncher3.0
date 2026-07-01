@@ -882,10 +882,18 @@ public class LauncherCanvasView extends View {
         }
     }
 
+    private void closeAmapFloatingMap() {
+        try {
+            AmapFloatingCardController.sendCloseMapBroadcast(getContext());
+        } catch (Throwable ignored) {
+        }
+    }
+
     private void openNotificationListenerSettings() {
         try {
             Intent intent = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            closeAmapFloatingMap();
             getContext().startActivity(intent);
         } catch (Throwable t) {
             Toast.makeText(getContext(), "无法打开通知读取权限设置", Toast.LENGTH_SHORT).show();
@@ -900,6 +908,7 @@ public class LauncherCanvasView extends View {
                 Intent intent = getContext().getPackageManager().getLaunchIntentForPackage(pkg);
                 if (intent != null) {
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    closeAmapFloatingMap();
                     getContext().startActivity(intent);
                     return;
                 }
@@ -911,6 +920,7 @@ public class LauncherCanvasView extends View {
             Intent intent = new Intent();
             intent.setComponent(new ComponentName("com.ts.MainUI", "com.ts.bt.BtMusicActivity"));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            closeAmapFloatingMap();
             getContext().startActivity(intent);
         } catch (Throwable t) {
             Toast.makeText(getContext(), "无法打开音乐软件", Toast.LENGTH_SHORT).show();
@@ -1683,6 +1693,7 @@ public class LauncherCanvasView extends View {
             Intent intent = new Intent();
             intent.setComponent(new ComponentName("com.ts.MainUI", "com.ts.bt.BtMusicActivity"));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            closeAmapFloatingMap();
             getContext().startActivity(intent);
         } catch (Throwable t) {
             Toast.makeText(getContext(), "无法打开蓝牙音乐界面", Toast.LENGTH_SHORT).show();
@@ -2060,6 +2071,7 @@ public class LauncherCanvasView extends View {
 
                 RectF card6 = new RectF(1970f, 546.5f, 2540f, 684.5f);
                 if (card6.contains(x, y)) {
+                    closeAmapFloatingMap();
                     getContext().startActivity(new Intent(getContext(), WeatherSettingsActivity.class));
                     return true;
                 }
@@ -2345,6 +2357,7 @@ public class LauncherCanvasView extends View {
             showEditDialog("签名", "signature", "MikuCarLauncher");
         } else if (index == 3) {
             Intent intent = new Intent(getContext(), DesktopSettingsActivity.class);
+            closeAmapFloatingMap();
             getContext().startActivity(intent);
         } else if (index == 4) {
             showAboutDialog();
@@ -2630,6 +2643,7 @@ public class LauncherCanvasView extends View {
                     Toast.makeText(getContext(), "4号卡片尚未设置常用软件", Toast.LENGTH_SHORT).show();
                 }
             } else if (selectedCardIndex == 5) {
+                closeAmapFloatingMap();
                 getContext().startActivity(new Intent(getContext(), WeatherSettingsActivity.class));
             } else {
                 Toast.makeText(getContext(), (selectedCardIndex + 1) + "号卡片", Toast.LENGTH_SHORT).show();
@@ -2749,6 +2763,7 @@ public class LauncherCanvasView extends View {
                 showEditDialog("签名", "signature", "MikuCarLauncher");
             } else if (selectedMineRowIndex == 3) {
                 Intent intent = new Intent(getContext(), DesktopSettingsActivity.class);
+                closeAmapFloatingMap();
                 getContext().startActivity(intent);
             } else if (selectedMineRowIndex == 4) {
                 showAboutDialog();
@@ -2898,16 +2913,14 @@ public class LauncherCanvasView extends View {
                 Intent fallback = getContext().getPackageManager().getLaunchIntentForPackage(pkg);
                 if (fallback != null) {
                     fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    closeAmapFloatingMap();
                     getContext().startActivity(fallback);
                     return;
                 }
                 launch.setPackage(pkg);
             }
             launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            try {
-                AmapFloatingCardController.sendCloseMapBroadcast(getContext());
-            } catch (Throwable ignored) {
-            }
+            closeAmapFloatingMap();
             getContext().startActivity(launch);
         } catch (Throwable t) {
             Toast.makeText(getContext(), "无法打开：" + label, Toast.LENGTH_SHORT).show();

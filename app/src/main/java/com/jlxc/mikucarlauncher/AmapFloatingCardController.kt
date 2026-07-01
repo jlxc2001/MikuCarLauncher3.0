@@ -57,11 +57,12 @@ class AmapFloatingCardController(
         const val DEFAULT_FORCE_WIDTH_PX = 1125
         const val DEFAULT_FORCE_HEIGHT_PX = 515
         const val DEFAULT_DPI = 200
-        const val DEFAULT_COLD_START_RETURN_DELAY_MS = 5000
+        const val DEFAULT_COLD_START_RETURN_DELAY_MS = 8000
 
         private const val MIN_SCALE_PERCENT = 10
         private const val MAX_SCALE_PERCENT = 300
-        private val AMAP_PASSIVE_SHOW_RETRY_DELAYS_MS = longArrayOf(350L, 900L, 1800L, 3000L)
+        private val AMAP_PASSIVE_SHOW_RETRY_DELAYS_MS = longArrayOf(350L, 900L, 1800L, 3000L, 5200L, 7800L)
+        private val AMAP_HOME_GUARANTEE_SHOW_DELAYS_MS = longArrayOf(0L, 260L, 700L, 1250L, 2100L, 3400L, 5200L, 7600L, 10500L, 14000L)
 
 
         data class FloatingCardSettings(
@@ -261,9 +262,14 @@ class AmapFloatingCardController(
      * 这样可以避免设置页 / 应用抽屉 / 我的页面 / 切后台后又被 onResume 或焦点恢复误拉起。
      */
     fun setHomeVisible(visible: Boolean) {
+        val becameVisible = visible && !allowShowOnHome
         allowShowOnHome = visible
         if (visible) {
             postUpdateMapWindow()
+            if (becameVisible) {
+                // 首页刚恢复时做一轮“保障补发”，解决高德已在前台/导航浮层存在但主悬浮窗偶发不加载的问题。
+                scheduleHomeGuaranteeShowBurst(false)
+            }
         } else {
             closeMap()
         }
@@ -287,6 +293,55 @@ class AmapFloatingCardController(
         lastRect = null
         lastDpi = -1
         sendCloseMapBroadcast(activity)
+    }
+
+    /**
+     * 首页重复点击“首页”或实体 HOME 键时用于手动修复悬浮窗：
+     * 先关闭旧窗口，再在很短延迟后重新发送 showmap，避免高德悬浮窗偶发丢失。
+     */
+    fun reloadMapWindow() {
+        if (!allowShowOnHome) {
+            closeMap()
+            return
+        }
+        isShown = false
+        lastRect = null
+        lastDpi = -1
+        hasTriedWakeAmapProcess = false
+        pendingWakeRetry = false
+        sendCloseMapBroadcast(activity)
+        mainHandler.postDelayed({
+            if (allowShowOnHome) {
+                updateMapWindow()
+                scheduleHomeGuaranteeShowBurst(false)
+            }
+        }, 180L)
+    }
+
+    /**
+     * 主动保障主悬浮窗出现：不依赖 lastRect 去重，持续补发 showmap。
+     * 用于：开机高德预热返回桌面、首页再次点击首页、实体 HOME 重入、导航过程中高德已有其它小浮窗但主悬浮窗未恢复。
+     */
+    fun ensureMapWindowVisibleAggressively(closeFirst: Boolean) {
+        if (!allowShowOnHome) {
+            closeMap()
+            return
+        }
+        if (closeFirst) {
+            isShown = false
+            lastRect = null
+            lastDpi = -1
+            sendCloseMapBroadcast(activity)
+            mainHandler.postDelayed({
+                if (allowShowOnHome) {
+                    forceShowCurrentMapWindow()
+                    scheduleHomeGuaranteeShowBurst(false)
+                }
+            }, 180L)
+        } else {
+            forceShowCurrentMapWindow()
+            scheduleHomeGuaranteeShowBurst(false)
+        }
     }
 
     fun postUpdateMapWindow() {
@@ -371,6 +426,46 @@ class AmapFloatingCardController(
                 }
             }, delayMs)
         }
+    }
+
+    private fun scheduleHomeGuaranteeShowBurst(closeFirst: Boolean) {
+        if (!allowShowOnHome) {
+            return
+        }
+        if (closeFirst) {
+            sendCloseMapBroadcast(activity)
+            isShown = false
+            lastRect = null
+            lastDpi = -1
+        }
+        AMAP_HOME_GUARANTEE_SHOW_DELAYS_MS.forEach { delayMs ->
+            mainHandler.postDelayed({
+                if (allowShowOnHome) {
+                    forceShowCurrentMapWindow()
+                }
+            }, delayMs)
+        }
+    }
+
+    private fun forceShowCurrentMapWindow() {
+        if (!allowShowOnHome) {
+            return
+        }
+        if (!isAmapFloatingInstalled(activity)) {
+            return
+        }
+        if (mapCardContainer.width <= 0 || mapCardContainer.height <= 0) {
+            return
+        }
+        val settings = readInstanceSettings()
+        val rect = measureCardRect(settings)
+        if (rect.width() <= 0 || rect.height() <= 0) {
+            return
+        }
+        sendShowMapBroadcast(activity, rect, settings.dpi)
+        isShown = true
+        lastRect = Rect(rect)
+        lastDpi = settings.dpi
     }
 
     private fun readInstanceSettings(): FloatingCardSettings {

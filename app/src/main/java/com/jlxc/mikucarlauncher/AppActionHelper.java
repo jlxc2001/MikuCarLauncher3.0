@@ -61,6 +61,13 @@ public final class AppActionHelper {
         dialog.show();
     }
 
+    private static void closeAmap(Context context) {
+        try {
+            AmapFloatingCardController.sendCloseMapBroadcast(context);
+        } catch (Throwable ignored) {
+        }
+    }
+
     public static void openApp(Context context, String label, String pkg, String cls) {
         try {
             Intent launch = new Intent(Intent.ACTION_MAIN);
@@ -74,10 +81,7 @@ public final class AppActionHelper {
                 }
             }
             launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            try {
-                AmapFloatingCardController.sendCloseMapBroadcast(context);
-            } catch (Throwable ignored) {
-            }
+            closeAmap(context);
             context.startActivity(launch);
         } catch (Throwable t) {
             Toast.makeText(context, "无法打开：" + (label == null ? pkg : label), Toast.LENGTH_SHORT).show();
@@ -132,6 +136,7 @@ public final class AppActionHelper {
         intent.putExtra("pkg", pkg);
         intent.putExtra("cls", cls);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        closeAmap(context);
         context.startActivity(intent);
     }
 
@@ -159,6 +164,7 @@ public final class AppActionHelper {
             intent.setData(Uri.parse("package:" + pkg));
             intent.putExtra(Intent.EXTRA_RETURN_RESULT, false);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            closeAmap(context);
             context.startActivity(intent);
             return;
         } catch (Throwable ignored) {
@@ -168,6 +174,7 @@ public final class AppActionHelper {
             Intent intent = new Intent(Intent.ACTION_DELETE);
             intent.setData(Uri.parse("package:" + pkg));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            closeAmap(context);
             context.startActivity(intent);
             return;
         } catch (Throwable ignored) {
@@ -177,6 +184,7 @@ public final class AppActionHelper {
             Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
             intent.setData(Uri.parse("package:" + pkg));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            closeAmap(context);
             context.startActivity(intent);
             Toast.makeText(context, "车机未开放卸载界面，已打开软件详情", Toast.LENGTH_LONG).show();
         } catch (Throwable t) {
@@ -189,6 +197,7 @@ public final class AppActionHelper {
             Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
             intent.setData(Uri.parse("package:" + pkg));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            closeAmap(context);
             context.startActivity(intent);
         } catch (Throwable t) {
             Toast.makeText(context, "无法打开软件详情", Toast.LENGTH_SHORT).show();
