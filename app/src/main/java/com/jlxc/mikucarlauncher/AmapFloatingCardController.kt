@@ -12,6 +12,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.view.View
 import android.widget.Toast
+import android.util.Log
 import kotlin.math.roundToInt
 
 /**
@@ -43,6 +44,7 @@ class AmapFloatingCardController(
         const val PREF_AMAP_CARD_DPI = "amap_card_dpi"
         const val PREF_AMAP_COLD_START_FRONT_WARMUP_ENABLED = "amap_cold_start_front_warmup_enabled"
         const val PREF_AMAP_COLD_START_RETURN_DELAY_MS = "amap_cold_start_return_delay_ms"
+        const val PREF_AMAP_COLD_START_LAST_WARMUP_AT = "amap_cold_start_last_warmup_at"
 
         private const val PREF_AMAP_CARD_PRESET_VERSION = "amap_card_preset_version"
         private const val CURRENT_PRESET_VERSION = 2
@@ -58,6 +60,7 @@ class AmapFloatingCardController(
         const val DEFAULT_FORCE_HEIGHT_PX = 515
         const val DEFAULT_DPI = 200
         const val DEFAULT_COLD_START_RETURN_DELAY_MS = 8000
+        const val DEFAULT_COLD_START_WARMUP_COOLDOWN_MS = 30 * 60 * 1000L
 
         private const val MIN_SCALE_PERCENT = 10
         private const val MAX_SCALE_PERCENT = 300
@@ -234,6 +237,7 @@ class AmapFloatingCardController(
             intent.putExtra("h", rect.height())
             intent.putExtra("dpi", dpi.coerceAtLeast(0))
             context.sendBroadcast(intent)
+            Log.i("MikuAmap", "showmap x=${rect.left} y=${rect.top} w=${rect.width()} h=${rect.height()} dpi=${dpi.coerceAtLeast(0)}")
         }
 
         @JvmStatic
@@ -241,6 +245,7 @@ class AmapFloatingCardController(
             val intent = Intent(ACTION_CLOSE_MAP)
             intent.setPackage(AMAP_FLOATING_PACKAGE)
             context.sendBroadcast(intent)
+            Log.i("MikuAmap", "closemap broadcast")
         }
 
         private fun dp(context: Context, value: Float): Float {

@@ -821,3 +821,10 @@ adb shell am broadcast -a com.autonavi.plus.closemap
 - 新增前台应用安全检查：如果车机系统自动把全景/360/倒车画面拉到前台，即使不是从 MikuCarLauncher 点击进入，也会强制关闭高德悬浮窗。
 - 首页按 HOME / 高德自身悬浮窗造成的短暂失焦仍然不会误关；但一旦前台切到第三方安全画面，会立即关闭。
 - 版本：versionCode 82，versionName 0.7.3.8-amap-panorama-safety-guard。
+
+
+## V0.7.3.9 高德返回首页恢复修正
+- 修复普通第三方 App 前台时被误当成“安全阻断”的问题：现在普通第三方 App 只会关闭高德悬浮窗，不会留下 5 秒阻断，按 HOME 回首页后可立即重新 showmap。
+- 倒车 / 全景 / 360 / 车辆界面仍然会进入安全阻断，防止高德遮挡泊车画面。
+- 高德前台预热增加 30 分钟冷却时间，避免从第三方 App 回桌面或 Activity 重建时反复拉起高德主界面。
+- 新增 MikuAmap 日志标签：会输出 showmap / closemap / safety close / external close，后续 logcat 更容易判断是谁关闭了悬浮窗。

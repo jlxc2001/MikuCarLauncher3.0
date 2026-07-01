@@ -22,11 +22,13 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.Toast;
+import android.util.Log;
 
 import java.util.List;
 import java.util.Locale;
 
 public class MainActivity extends Activity {
+    private static final String TAG_AMAP = "MikuAmap";
     public static final String PREFS = "miku_car_launcher_settings";
     private static boolean sAmapColdStartWarmupDone = false;
     public static final String PREF_CARD1_WIDGET_ID = "card1_widget_id";
@@ -286,7 +288,9 @@ public class MainActivity extends Activity {
 
     private void markExplicitExternalLaunch() {
         explicitExternalLaunchUntilMs = System.currentTimeMillis() + 5000L;
-        blockAmapForSafety("explicit-external-launch", 5000L);
+        // 普通第三方 App 只需要关闭高德，不应该留下 5 秒安全阻断。
+        // 否则从第三方 App 按 HOME 回桌面时，首页会因为安全阻断还没过期而无法重新 showmap。
+        closeAmapForExternalForeground("explicit-external-launch");
     }
 
     private void closeAmapFloatingImmediately() {
@@ -301,6 +305,28 @@ public class MainActivity extends Activity {
             } else {
                 AmapFloatingCardController.sendCloseMapBroadcast(this);
             }
+            Log.i(TAG_AMAP, "closemap immediate");
+        } catch (Throwable ignored) {
+            try {
+                AmapFloatingCardController.sendCloseMapBroadcast(this);
+            } catch (Throwable ignored2) {
+            }
+        }
+    }
+
+    private void closeAmapForExternalForeground(String reason) {
+        keepAmapOnHomeKeyUntilMs = 0L;
+        amapHomeGuardUntilMs = 0L;
+        try {
+            if (mapCardContainer != null) {
+                mapCardContainer.setVisibility(View.GONE);
+            }
+            if (amapFloatingCardController != null) {
+                amapFloatingCardController.setHomeVisible(false);
+            } else {
+                AmapFloatingCardController.sendCloseMapBroadcast(this);
+            }
+            Log.i(TAG_AMAP, "closemap external reason=" + reason);
         } catch (Throwable ignored) {
             try {
                 AmapFloatingCardController.sendCloseMapBroadcast(this);
@@ -315,6 +341,12 @@ public class MainActivity extends Activity {
         }
         SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
         if (!sp.getBoolean(AmapFloatingCardController.PREF_AMAP_COLD_START_FRONT_WARMUP_ENABLED, true)) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        long lastWarmupAt = sp.getLong(AmapFloatingCardController.PREF_AMAP_COLD_START_LAST_WARMUP_AT, 0L);
+        if (lastWarmupAt > 0L && now - lastWarmupAt < AmapFloatingCardController.DEFAULT_COLD_START_WARMUP_COOLDOWN_MS) {
+            Log.i(TAG_AMAP, "skip warmup by cooldown last=" + lastWarmupAt);
             return;
         }
         if (!AmapFloatingCardController.isAmapFloatingInstalled(this)) {
@@ -336,6 +368,7 @@ public class MainActivity extends Activity {
         delayMs = Math.max(0, Math.min(30000, delayMs));
 
         sAmapColdStartWarmupDone = true;
+        sp.edit().putLong(AmapFloatingCardController.PREF_AMAP_COLD_START_LAST_WARMUP_AT, System.currentTimeMillis()).apply();
         amapColdStartWarmupUntilMs = System.currentTimeMillis() + delayMs + 12000L;
         keepAmapOnHomeKeyUntilMs = Math.max(keepAmapOnHomeKeyUntilMs, amapColdStartWarmupUntilMs);
         extendAmapHomeGuard(delayMs + 35000L);
@@ -539,6 +572,7 @@ public class MainActivity extends Activity {
         if (mapCardContainer != null) {
             mapCardContainer.setVisibility(View.GONE);
         }
+        Log.i(TAG_AMAP, "closemap safety reason=" + reason + " blockMs=" + durationMs);
     }
 
     private void checkAmapSafetySuppression(String reason) {
@@ -556,9 +590,14 @@ public class MainActivity extends Activity {
             return;
         }
 
-        // 只要当前前台已经不是桌面或高德悬浮版，就按安全场景处理。
-        // 这样倒车/全景/360 被车机系统自动拉起时，即使不是从本 Launcher 点击打开，也会立即关闭高德悬浮窗。
-        blockAmapForSafety("foreground-" + topPackage + "-" + reason, 5000L);
+        if (isKnownPanoramaOrVehicleForegroundPackage(topPackage)) {
+            blockAmapForSafety("foreground-" + topPackage + "-" + reason, 5000L);
+            return;
+        }
+
+        // 普通第三方 App：只关闭，不进入安全阻断倒计时。
+        // 否则从第三方 App 按 HOME 返回首页时，showmap 会被上一轮 5 秒阻断吃掉。
+        closeAmapForExternalForeground("foreground-" + topPackage + "-" + reason);
     }
 
     private String getTopPackageCompat() {
@@ -577,6 +616,15 @@ public class MainActivity extends Activity {
 
     private boolean isOurPackage(String pkg) {
         return pkg != null && pkg.equals(getPackageName());
+    }
+
+    private boolean isKnownPanoramaOrVehicleForegroundPackage(String pkg) {
+        if (pkg == null) return false;
+        return pkg.equals("com.baony.avm360")
+                || pkg.equals("com.ts.MainUI")
+                || pkg.toLowerCase(Locale.US).contains("avm")
+                || pkg.toLowerCase(Locale.US).contains("camera")
+                || pkg.toLowerCase(Locale.US).contains("panorama");
     }
 
     private boolean isVehiclePanoramaOrReverseLikely() {
@@ -962,6 +1010,11 @@ public class MainActivity extends Activity {
         super.onResume();
         isActivityResumed = true;
         if (isHomePage()) {
+            // 已经回到首页：普通第三方 App 的外部启动保护立即结束，允许重新 showmap。
+            explicitExternalLaunchUntilMs = 0L;
+            if (!isVehiclePanoramaOrReverseLikely()) {
+                amapSafetyBlockUntilMs = 0L;
+            }
             extendAmapHomeGuard(30000L);
         }
         keepFullscreen();

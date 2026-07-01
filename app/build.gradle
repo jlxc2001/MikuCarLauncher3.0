@@ -11,8 +11,8 @@ android {
         applicationId 'com.jlxc.mikucarlauncher'
         minSdk 21
         targetSdk 28
-        versionCode 82
-        versionName '0.7.3.8-amap-panorama-safety-guard'
+        versionCode 83
+        versionName '0.7.3.9-amap-return-restore-guard'
     }
 
     // GitHub 网页上传不会自动删除旧文件。
