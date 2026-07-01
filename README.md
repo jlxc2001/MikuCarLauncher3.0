@@ -864,3 +864,11 @@ adb shell am broadcast -a com.autonavi.plus.closemap
 - 检测到 `com.baony.avm360` 或 `com.baony.ui.activity.AVMBVActivity` 位于前台时，持续节流发送 `closemap`，用于雷达/双闪自动调出全景影像的场景。
 - MainActivity 在 pause / 失焦后延迟检查前台 Activity，避免 AVM 自动拉起时首页逻辑仍保留高德悬浮窗。
 - 退出 AVM 后回到首页，恢复普通首页 showmap 逻辑，不保留安全阻断倒计时。
+
+
+## V0.7.4.4 高德全景 Surface 保持窗口修复
+- 保留 V0.7.4.0 的高德最小状态机：不启动、不杀、不重启高德，只发送 showmap / closemap。
+- 保留倒车档位 `carletter_reserve_state` 关闭高德逻辑。
+- 新增监听 `com.ldfy.car360ctrl.action`，用于双闪 / 雷达 / 全景按钮等非倒车触发场景。
+- 新增 AVM 安全保持窗口：检测到 `com.baony.avm360` / `AVMBVActivity` 后，即使 Activity 短暂退到后台，也会继续保持约 12 秒不显示高德，避免 BirdviewSurface 仍在显示时被高德悬浮窗遮挡。
+- AVM 保持窗口期间会节流补发 closemap；窗口结束并回到首页后再恢复 showmap。

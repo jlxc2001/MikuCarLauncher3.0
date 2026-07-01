@@ -32,6 +32,8 @@ import java.util.Locale;
 public class MainActivity extends Activity {
     private static final String TAG_AMAP = "MikuAmap";
     private static final String ACTION_FORFAN_REVERSING = "com.forfan.operator_reversing";
+    // 雷达 / 双闪 / 触摸车机全景按钮时，AVM 模块会发这个广播；倒车不一定是唯一触发源。
+    private static final String ACTION_LDFY_CAR360_CTRL = "com.ldfy.car360ctrl.action";
     private static final String SETTING_CARLETTER_REVERSE_STATE = "carletter_reserve_state";
     public static final String PREFS = "miku_car_launcher_settings";
     private static boolean sAmapColdStartWarmupDone = false;
@@ -96,6 +98,11 @@ public class MainActivity extends Activity {
     private boolean panoramaForegroundActive = false;
     private boolean foregroundSafetyMonitorStarted = false;
     private long lastPanoramaCloseMapAt = 0L;
+    // AVM 有时会把 Activity 短暂退到后台，但 BirdviewSurface / 摄像头画面仍在显示。
+    // 记录一个安全保持窗口，避免刚识别到全景后马上回到 Launcher 又把高德 show 出来。
+    private long avmSafetyHoldUntilMs = 0L;
+    private static final long AVM_FOREGROUND_HOLD_MS = 12000L;
+    private static final long AVM_SIGNAL_HOLD_MS = 12000L;
     private final Runnable foregroundSafetyMonitorRunnable = new Runnable() {
         @Override
         public void run() {
@@ -417,10 +424,12 @@ public class MainActivity extends Activity {
                         if (intent == null) {
                             return;
                         }
-                        if (ACTION_FORFAN_REVERSING.equals(intent.getAction())) {
+                        String action = intent.getAction();
+                        if (ACTION_FORFAN_REVERSING.equals(action)) {
                             Log.i(TAG_AMAP, "receive reversing broadcast extras=" + (intent.getExtras() == null ? "null" : intent.getExtras().toString()));
                             // 车机广播和 carletter_reserve_state 写入几乎同时发生。
                             // 为了安全，收到倒车广播先立即 closemap，再短延迟读取设置确认状态。
+                            markAvmSafetyHold("forfan-reversing-broadcast", AVM_SIGNAL_HOLD_MS);
                             closeAmapForReverseCamera("forfan-broadcast-immediate");
                             if (rootLayout != null) {
                                 rootLayout.postDelayed(new Runnable() {
@@ -432,10 +441,33 @@ public class MainActivity extends Activity {
                             } else {
                                 updateReverseCameraSafetyState("forfan-broadcast");
                             }
+                        } else if (ACTION_LDFY_CAR360_CTRL.equals(action)) {
+                            // 双闪 / 雷达 / 全景按钮触发时，很多车机不会改 carletter_reserve_state，
+                            // 也可能让 AVM Activity 很快退到后台，只剩 BirdviewSurface 继续显示。
+                            // 收到全景控制广播后直接关闭高德，并保持一小段安全窗口。
+                            Log.i(TAG_AMAP, "receive ldfy car360 broadcast extras=" + (intent.getExtras() == null ? "null" : intent.getExtras().toString()));
+                            markAvmSafetyHold("ldfy-car360-broadcast", AVM_SIGNAL_HOLD_MS);
+                            closeAmapForReverseCamera("ldfy-car360-broadcast");
+                            if (mainHandler != null) {
+                                mainHandler.postDelayed(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        checkAmapForegroundSafety("ldfy-car360-delay-300");
+                                    }
+                                }, 300L);
+                                mainHandler.postDelayed(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        checkAmapForegroundSafety("ldfy-car360-delay-1200");
+                                    }
+                                }, 1200L);
+                            }
                         }
                     }
                 };
-                registerReceiver(reverseStateReceiver, new IntentFilter(ACTION_FORFAN_REVERSING));
+                IntentFilter filter = new IntentFilter(ACTION_FORFAN_REVERSING);
+                filter.addAction(ACTION_LDFY_CAR360_CTRL);
+                registerReceiver(reverseStateReceiver, filter);
             }
         } catch (Throwable t) {
             Log.w(TAG_AMAP, "register reverse broadcast failed", t);
@@ -492,6 +524,19 @@ public class MainActivity extends Activity {
     }
 
 
+    private void markAvmSafetyHold(String reason, long durationMs) {
+        long until = System.currentTimeMillis() + Math.max(1000L, durationMs);
+        if (until > avmSafetyHoldUntilMs) {
+            avmSafetyHoldUntilMs = until;
+        }
+        panoramaForegroundActive = true;
+        Log.i(TAG_AMAP, "avmSafetyHold until=" + avmSafetyHoldUntilMs + " reason=" + reason);
+    }
+
+    private boolean isAvmSafetyHoldActive() {
+        return System.currentTimeMillis() < avmSafetyHoldUntilMs;
+    }
+
     private void startAmapForegroundSafetyMonitor() {
         if (foregroundSafetyMonitorStarted) {
             return;
@@ -513,14 +558,24 @@ public class MainActivity extends Activity {
     private void checkAmapForegroundSafety(String reason) {
         ComponentName top = getTopActivityComponentCompat();
         boolean active = isKnownPanoramaOrVehicleForeground(top);
+        long now = System.currentTimeMillis();
         if (active) {
-            panoramaForegroundActive = true;
-            long now = System.currentTimeMillis();
+            markAvmSafetyHold(reason + " top=" + flattenComponent(top), AVM_FOREGROUND_HOLD_MS);
             // 全景画面可能由雷达/双闪自动拉起，此时 MainActivity 会被 pause，不能依赖 onPause 的普通关闭逻辑。
             // 这里在 AVM 前台期间持续补发 closemap，但做轻微节流，避免 log 和广播过量。
             if (now - lastPanoramaCloseMapAt > 800L) {
                 lastPanoramaCloseMapAt = now;
                 closeAmapForReverseCamera(reason + " top=" + flattenComponent(top));
+            }
+            return;
+        }
+
+        // AVM Activity 有时已经 onStop / 退到后台，但 BirdviewSurface 摄像头层仍在显示。
+        // 在保持窗口内继续禁止 showmap，并节流补发 closemap，防止高德悬浮窗覆盖全景画面。
+        if (isAvmSafetyHoldActive()) {
+            if (now - lastPanoramaCloseMapAt > 800L) {
+                lastPanoramaCloseMapAt = now;
+                closeAmapForReverseCamera(reason + " avm-hold top=" + flattenComponent(top));
             }
             return;
         }
@@ -803,6 +858,7 @@ public class MainActivity extends Activity {
                 && isActivityResumed
                 && !reverseCameraActive
                 && !panoramaForegroundActive
+                && !isAvmSafetyHoldActive()
                 && !isExplicitExternalLaunchActive();
     }
 
