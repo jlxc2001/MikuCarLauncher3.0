@@ -13,12 +13,10 @@ import android.view.accessibility.AccessibilityEvent;
 import java.util.Locale;
 
 /**
- * 用于车机安全场景的前台窗口检测。
+ * 轻量前台包名检测服务。
  *
- * 说明：
- * - 不读取屏幕文字，不做点击，不做自动控制。
- * - 只读取当前前台窗口的 package/class。
- * - 当检测到全景 / AVM 相关窗口时，立即发送 closemap，避免高德悬浮窗遮挡倒车/全景画面。
+ * 只监听窗口状态变化，不读取节点内容，不启用交互窗口扫描，不监听内容变化。
+ * 目的：识别 com.baony.avm360 / AVMBVActivity 这类全景前台窗口，并关闭高德悬浮窗。
  */
 public class MikuForegroundAccessibilityService extends AccessibilityService {
     private static final String TAG = "MikuA11y";
@@ -34,7 +32,7 @@ public class MikuForegroundAccessibilityService extends AccessibilityService {
     private static volatile long sAvmHoldUntilMs = 0L;
     private static volatile long sLastCloseMapAtMs = 0L;
 
-    private static final long AVM_HOLD_MS = 15000L;
+    private static final long AVM_HOLD_MS = 12000L;
     private static final long CLOSEMAP_THROTTLE_MS = 800L;
 
     @Override
@@ -43,17 +41,16 @@ public class MikuForegroundAccessibilityService extends AccessibilityService {
         sConnected = true;
         try {
             AccessibilityServiceInfo info = new AccessibilityServiceInfo();
-            info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-                    | AccessibilityEvent.TYPE_WINDOWS_CHANGED
-                    | AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED;
+            info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
             info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC;
-            info.flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
-                    | AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
-            info.notificationTimeout = 80L;
+            info.flags = 0;
+            info.notificationTimeout = 120L;
+            // 只监听全景 App，避免对 MainApp / com.ts.MainUI 产生额外无障碍事件压力。
+            info.packageNames = new String[]{"com.baony.avm360"};
             setServiceInfo(info);
         } catch (Throwable ignored) {
         }
-        Log.i(TAG, "connected");
+        Log.i(TAG, "connected safe-mode");
     }
 
     @Override
@@ -101,9 +98,7 @@ public class MikuForegroundAccessibilityService extends AccessibilityService {
 
     private void closeAmapFromService(String reason) {
         long now = System.currentTimeMillis();
-        if (now - sLastCloseMapAtMs < CLOSEMAP_THROTTLE_MS) {
-            return;
-        }
+        if (now - sLastCloseMapAtMs < CLOSEMAP_THROTTLE_MS) return;
         sLastCloseMapAtMs = now;
         try {
             AmapFloatingCardController.sendCloseMapBroadcast(this);
@@ -134,9 +129,7 @@ public class MikuForegroundAccessibilityService extends AccessibilityService {
     }
 
     public static boolean isPanoramaForegroundOrHold() {
-        if (isPanoramaLike(getCurrentPackage(), getCurrentClassName())) {
-            return true;
-        }
+        if (isPanoramaLike(getCurrentPackage(), getCurrentClassName())) return true;
         return System.currentTimeMillis() <= sAvmHoldUntilMs;
     }
 
@@ -151,13 +144,10 @@ public class MikuForegroundAccessibilityService extends AccessibilityService {
         if (cls == null) cls = "";
         String p = pkg.toLowerCase(Locale.US);
         String c = cls.toLowerCase(Locale.US);
-
         if ("com.baony.avm360".equals(pkg)) return true;
         if (c.contains("avmbvactivity")) return true;
-
-        // 后续如果换全景模块包名，只要包名/类名带这些关键词也能兜底。
-        if (p.contains("avm") || p.contains("panorama") || p.contains("birdview") || p.contains("360ctrl")) return true;
-        if (c.contains("avm") || c.contains("panorama") || c.contains("birdview") || c.contains("360ctrl")) return true;
+        if (p.contains("avm") || p.contains("panorama") || p.contains("birdview")) return true;
+        if (c.contains("avm") || c.contains("panorama") || c.contains("birdview")) return true;
         return false;
     }
 
@@ -172,9 +162,7 @@ public class MikuForegroundAccessibilityService extends AccessibilityService {
             splitter.setString(enabled);
             while (splitter.hasNext()) {
                 String item = splitter.next();
-                if (target.equalsIgnoreCase(item) || targetShort.equalsIgnoreCase(item)) {
-                    return true;
-                }
+                if (target.equalsIgnoreCase(item) || targetShort.equalsIgnoreCase(item)) return true;
             }
         } catch (Throwable ignored) {
         }

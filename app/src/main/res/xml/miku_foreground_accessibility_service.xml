@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowsChanged|typeWindowContentChanged"
+    android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows"
-    android:canRetrieveWindowContent="true"
+    android:canRetrieveWindowContent="false"
     android:description="@string/miku_foreground_accessibility_desc"
-    android:notificationTimeout="80" />
+    android:notificationTimeout="120"
+    android:packageNames="com.baony.avm360" />

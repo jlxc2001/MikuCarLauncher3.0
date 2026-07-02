@@ -6,7 +6,6 @@ import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.os.Bundle;
-import android.provider.Settings;
 import android.text.InputType;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -59,6 +58,7 @@ public class AmapFloatingCardSettingsActivity extends Activity {
         super.onResume();
         keepFullscreen();
         refreshSummary();
+        refreshAccessibilityStatus();
         // 设置页属于非首页，进入后确保自动悬浮窗关闭。
         AmapFloatingCardController.sendCloseMapBroadcast(this);
     }
@@ -103,11 +103,10 @@ public class AmapFloatingCardSettingsActivity extends Activity {
         desc.setPadding(dp(26), dp(10), dp(26), dp(10));
         desc.setBackgroundColor(Color.WHITE);
         root.addView(desc, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(156)
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(128)
         ));
 
         summaryValue = addValue(root, "当前参数：");
-        accessibilityStatusValue = addValue(root, "无障碍前台检测：");
 
         insetDpEdit = addEdit(root, "inset 内缩 dp", false);
         xOffsetEdit = addEdit(root, "X 偏移 px", true);
@@ -166,12 +165,13 @@ public class AmapFloatingCardSettingsActivity extends Activity {
             }
         });
 
-        Button accessibilityPermission = addButton(root, "打开无障碍权限设置（用于检测全景 App 前台）");
+        accessibilityStatusValue = addValue(root, "无障碍前台检测：");
+
+        Button accessibilityPermission = addButton(root, "打开无障碍权限设置（轻量检测全景 App 前台）");
         accessibilityPermission.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
                 MikuForegroundAccessibilityService.openAccessibilitySettings(AmapFloatingCardSettingsActivity.this);
-                Toast.makeText(AmapFloatingCardSettingsActivity.this, "请开启 MikuCarLauncher 前台应用检测服务", Toast.LENGTH_LONG).show();
             }
         });
 
@@ -179,7 +179,7 @@ public class AmapFloatingCardSettingsActivity extends Activity {
         refreshAccessibility.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                refreshSummary();
+                refreshAccessibilityStatus();
             }
         });
 
@@ -423,6 +423,27 @@ public class AmapFloatingCardSettingsActivity extends Activity {
         loadSettings();
         refreshSummary();
         Toast.makeText(this, "已恢复默认参数", Toast.LENGTH_SHORT).show();
+    }
+
+
+    private void refreshAccessibilityStatus() {
+        if (accessibilityStatusValue == null) return;
+        boolean enabled = MikuForegroundAccessibilityService.isAccessibilityEnabled(this);
+        boolean connected = MikuForegroundAccessibilityService.isServiceConnected();
+        String pkg = MikuForegroundAccessibilityService.getCurrentPackage();
+        String cls = MikuForegroundAccessibilityService.getCurrentClassName();
+        long age = MikuForegroundAccessibilityService.getLastEventAgeMs();
+        String ageText = age == Long.MAX_VALUE ? "无" : (age + "ms 前");
+        accessibilityStatusValue.setText("无障碍前台检测：" + (enabled ? "已授权" : "未授权")
+                + " / " + (connected ? "服务运行中" : "服务未连接")
+                + "
+当前前台包名：" + (pkg == null || pkg.length() == 0 ? "无" : pkg)
+                + "
+当前前台类名：" + (cls == null || cls.length() == 0 ? "无" : cls)
+                + "
+最近事件：" + ageText
+                + "
+安全模式：仅监听 com.baony.avm360 的窗口状态变化，不读取屏幕内容。");
     }
 
     private void refreshSummary() {

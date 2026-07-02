@@ -874,10 +874,9 @@ adb shell am broadcast -a com.autonavi.plus.closemap
 - AVM 保持窗口期间会节流补发 closemap；窗口结束并回到首页后再恢复 showmap。
 
 
-## V0.7.4.7 高德无障碍前台检测 + 快速启动恢复
-- 基于 V0.7.4.4 无故障版本修改，不叠加 V0.7.4.5/V0.7.4.6 的 Hook 雷达逻辑。
-- 新增 `MikuForegroundAccessibilityService`，用户授权无障碍后，只读取当前前台 package/class，用于检测全景 App。
-- 检测到 `com.baony.avm360`、`AVMBVActivity`、`avm`、`panorama`、`birdview` 等全景相关前台窗口时，立即发送 `com.autonavi.plus.closemap`。
-- Launcher 不启动、不杀、不 force-stop、不重启高德；仍只管理 `showmap/closemap` 广播。
-- 在 1号卡片悬浮高德设置页加入无障碍授权入口和当前前台包名状态显示。
-- 针对熄火后快速启动导致 Live2D/高德偶发失效，新增首页轻量自恢复：启动/恢复后的 0.6s、1.6s、3.2s、6.2s、10s 自动恢复 Live2D 并补发 showmap。
+## V0.7.4.8 高德安全无障碍检测 + 快速启动恢复
+- 基于 V0.7.4.4 无故障版本重新修改，没有叠加 Hook 雷达守护。
+- 新增轻量无障碍服务：仅监听 `com.baony.avm360` 的窗口状态变化，不读取屏幕内容、不扫描控件、不点击。
+- 检测到全景 App / AVMBVActivity 前台时发送 `com.autonavi.plus.closemap`。
+- 移除对 `com.ts.MainUI` 的宽泛前台误判，避免 MainApp / 车机系统界面被无障碍或高德逻辑干扰。
+- 快速启动/冷启动回到首页后，会在 0.6s / 1.6s / 3.2s / 6.2s / 10s 自动恢复 Live2D 和高德 showmap。

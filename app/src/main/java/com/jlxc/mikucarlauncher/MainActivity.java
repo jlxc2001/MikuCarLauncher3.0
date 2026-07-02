@@ -92,12 +92,9 @@ public class MainActivity extends Activity {
     private boolean pendingLive2DHealthCheck = false;
     private BroadcastReceiver homeKeyReceiver;
     private BroadcastReceiver reverseStateReceiver;
-    private BroadcastReceiver accessibilityForegroundReceiver;
     private ContentObserver reverseStateObserver;
     private boolean reverseCameraActive = false;
     private Handler mainHandler;
-    private boolean quickStartRecoveryScheduled = false;
-    private long lastQuickStartRecoveryAt = 0L;
     private boolean panoramaForegroundActive = false;
     private boolean foregroundSafetyMonitorStarted = false;
     private long lastPanoramaCloseMapAt = 0L;
@@ -226,12 +223,12 @@ public class MainActivity extends Activity {
 
         setContentView(rootLayout);
         registerHomeKeyReceiver();
-        registerReverseSafetyObserver();
         registerAccessibilityForegroundReceiver();
+        registerReverseSafetyObserver();
         startAmapForegroundSafetyMonitor();
         updateReverseCameraSafetyState("create");
         checkAmapForegroundSafety("create");
-        scheduleQuickStartSurfaceRecovery("create");
+        scheduleQuickStartHomeRecovery();
         // V0.7.4.3：高德逻辑仍保持最小状态机；倒车档位用 carletter_reserve_state，
         // 雷达/双闪触发的全景则用前台 AVM Activity / Window 检测精准关闭。
 
@@ -658,12 +655,10 @@ public class MainActivity extends Activity {
         // 部分车机把倒车/泊车/车辆画面放在 com.ts.MainUI 内部 Activity。
         // 它在前台时不是 Launcher 首页，关闭高德悬浮窗是安全策略，不影响回到首页后的 showmap。
         if ("com.ts.MainUI".equals(pkg)) {
+            // 只识别明确的倒车/泊车/摄像头页面，避免把系统 MainUI 常驻前台误判成全景，导致高德一启动就被关闭。
             return lowerCls.contains("reverse")
                     || lowerCls.contains("park")
-                    || lowerCls.contains("camera")
-                    || lowerCls.contains("can")
-                    || lowerCls.contains("audi")
-                    || lowerCls.contains("mainui");
+                    || lowerCls.contains("camera");
         }
         return false;
     }
@@ -1090,83 +1085,6 @@ public class MainActivity extends Activity {
         homeKeyReceiver = null;
     }
 
-    private void registerAccessibilityForegroundReceiver() {
-        if (accessibilityForegroundReceiver != null) {
-            return;
-        }
-        accessibilityForegroundReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                if (intent == null || !MikuForegroundAccessibilityService.ACTION_FOREGROUND_CHANGED.equals(intent.getAction())) {
-                    return;
-                }
-                boolean avm = intent.getBooleanExtra(MikuForegroundAccessibilityService.EXTRA_AVM, false);
-                String pkg = intent.getStringExtra(MikuForegroundAccessibilityService.EXTRA_PACKAGE);
-                String cls = intent.getStringExtra(MikuForegroundAccessibilityService.EXTRA_CLASS);
-                if (avm) {
-                    markAvmSafetyHold("a11y-broadcast " + pkg + "/" + cls, AVM_FOREGROUND_HOLD_MS);
-                    closeAmapForReverseCamera("a11y-broadcast " + pkg + "/" + cls);
-                } else if (panoramaForegroundActive || isAvmSafetyHoldActive()) {
-                    checkAmapForegroundSafety("a11y-broadcast-normal " + pkg + "/" + cls);
-                }
-            }
-        };
-        try {
-            IntentFilter filter = new IntentFilter(MikuForegroundAccessibilityService.ACTION_FOREGROUND_CHANGED);
-            registerReceiver(accessibilityForegroundReceiver, filter);
-        } catch (Throwable ignored) {
-        }
-    }
-
-    private void unregisterAccessibilityForegroundReceiver() {
-        if (accessibilityForegroundReceiver == null) {
-            return;
-        }
-        try {
-            unregisterReceiver(accessibilityForegroundReceiver);
-        } catch (Throwable ignored) {
-        }
-        accessibilityForegroundReceiver = null;
-    }
-
-    private void scheduleQuickStartSurfaceRecovery(String reason) {
-        if (rootLayout == null) return;
-        long now = System.currentTimeMillis();
-        if (quickStartRecoveryScheduled && now - lastQuickStartRecoveryAt < 12000L) {
-            return;
-        }
-        quickStartRecoveryScheduled = true;
-        lastQuickStartRecoveryAt = now;
-        final long[] delays = new long[]{600L, 1600L, 3200L, 6200L, 10000L};
-        for (final long delay : delays) {
-            rootLayout.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    if (rootLayout == null || !isHomePage()) return;
-                    updateLive2DVisibility();
-                    if (live2DView != null && live2DView.isLive2DEnabled()) {
-                        live2DView.setVisibility(View.VISIBLE);
-                        live2DView.resumeLive2D();
-                        if (!live2DView.isLive2DHealthy() && delay >= 3000L) {
-                            live2DView.hardReloadLive2D();
-                            lastLive2DReloadAt = System.currentTimeMillis();
-                        }
-                    }
-                    updateReverseCameraSafetyState("quick-start-recovery");
-                    checkAmapForegroundSafety("quick-start-recovery");
-                    updateAmapFloatingCardVisibility();
-                    if (shouldShowAmapFloatingCardOnHome() && amapFloatingCardController != null) {
-                        amapFloatingCardController.reloadMapWindow();
-                    }
-                    if (delay == delays[delays.length - 1]) {
-                        quickStartRecoveryScheduled = false;
-                    }
-                }
-            }, delay);
-        }
-        Log.i(TAG_AMAP, "quick-start surface recovery scheduled reason=" + reason);
-    }
-
     @Override
     protected void onUserLeaveHint() {
         super.onUserLeaveHint();
@@ -1174,6 +1092,66 @@ public class MainActivity extends Activity {
             closeAmapFloatingImmediately();
         }
         // 首页按 HOME 不 closemap；等 onNewIntent / homekey 广播回到首页后补发 showmap。
+    }
+
+
+    private void registerAccessibilityForegroundReceiver() {
+        if (accessibilityForegroundReceiver != null) return;
+        accessibilityForegroundReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null || !MikuForegroundAccessibilityService.ACTION_FOREGROUND_CHANGED.equals(intent.getAction())) {
+                    return;
+                }
+                boolean avm = intent.getBooleanExtra(MikuForegroundAccessibilityService.EXTRA_AVM, false);
+                if (avm) {
+                    markAvmSafetyHold("a11y-avm-broadcast", AVM_SIGNAL_HOLD_MS);
+                    closeAmapForReverseCamera("a11y-avm-broadcast");
+                } else if (panoramaForegroundActive || isAvmSafetyHoldActive()) {
+                    checkAmapForegroundSafety("a11y-normal-broadcast");
+                }
+            }
+        };
+        try {
+            registerReceiver(accessibilityForegroundReceiver, new IntentFilter(MikuForegroundAccessibilityService.ACTION_FOREGROUND_CHANGED));
+        } catch (Throwable ignored) {
+            accessibilityForegroundReceiver = null;
+        }
+    }
+
+    private void unregisterAccessibilityForegroundReceiver() {
+        if (accessibilityForegroundReceiver == null) return;
+        try {
+            unregisterReceiver(accessibilityForegroundReceiver);
+        } catch (Throwable ignored) {
+        }
+        accessibilityForegroundReceiver = null;
+    }
+
+    private void scheduleQuickStartHomeRecovery() {
+        if (rootLayout == null || mainHandler == null) return;
+        long[] delays = new long[]{600L, 1600L, 3200L, 6200L, 10000L};
+        for (final long delay : delays) {
+            mainHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (rootLayout == null || !isActivityResumed || !isHomePage()) return;
+                    updateLive2DVisibility();
+                    if (live2DView != null && live2DView.isLive2DEnabled()) {
+                        live2DView.setVisibility(View.VISIBLE);
+                        live2DView.resumeLive2D();
+                        if (!live2DView.isLive2DHealthy() && delay >= 6200L) {
+                            live2DView.hardReloadLive2D();
+                            lastLive2DReloadAt = System.currentTimeMillis();
+                        }
+                    }
+                    updateAmapFloatingCardVisibility();
+                    if (shouldShowAmapFloatingCardOnHome()) {
+                        ensureAmapMainFloatingWindowLoaded(false);
+                    }
+                }
+            }, delay);
+        }
     }
 
     @Override
@@ -1187,8 +1165,8 @@ public class MainActivity extends Activity {
             AmapFloatingCardController.sendCloseMapBroadcast(this);
         }
         unregisterHomeKeyReceiver();
-        unregisterReverseSafetyObserver();
         unregisterAccessibilityForegroundReceiver();
+        unregisterReverseSafetyObserver();
         stopAmapForegroundSafetyMonitor();
         super.onDestroy();
     }
@@ -1293,8 +1271,8 @@ public class MainActivity extends Activity {
                     positionRearAiOverlay();
                 }
             });
-            scheduleQuickStartSurfaceRecovery("resume");
         }
+        scheduleQuickStartHomeRecovery();
     }
 
     @Override
