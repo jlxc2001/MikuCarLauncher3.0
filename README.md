@@ -893,3 +893,11 @@ adb shell am broadcast -a com.autonavi.plus.closemap
 - 车机熄火低功耗后快速启动时，会在 0~30 秒内多次恢复首页资源。
 - 恢复动作包括：Live2D resume/applySettings/hardReload、Amap showmap 补发、1号地图卡片状态刷新。
 - 仍然不主动启动/杀掉/force-stop 高德地图，避免打断正在导航的路线。
+
+
+## V0.7.5.0 点火恢复 / 高德 / Live2D 修复
+- 基于 V0.7.4.9 继续修复快速启动恢复。
+- 快速启动恢复时，如果检测到 com.autonavi.amapautoys 进程未运行，会自动拉起一次高德悬浮版，按设置延迟返回 Launcher，再补发 showmap。
+- Live2D 恢复从普通 hardReload 升级为重建 WebView 后重新加载模型，解决 WebView 渲染进程被车机低功耗杀掉后重启 App 仍空白的问题。
+- 新增 Hook/MainApp 车辆数据上升沿守护：双闪从关闭到打开、前/后雷达从未接近到接近时关闭高德悬浮窗并保持约 12 秒。
+- Hook 守护只读取 Launcher 已有 VehicleDataProvider 快照，不额外高频轮询 MainApp，不 start/stop/kill MainApp。

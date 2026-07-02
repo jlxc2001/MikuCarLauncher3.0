@@ -104,8 +104,33 @@ public class MainActivity extends Activity {
     // AVM 有时会把 Activity 短暂退到后台，但 BirdviewSurface / 摄像头画面仍在显示。
     // 记录一个安全保持窗口，避免刚识别到全景后马上回到 Launcher 又把高德 show 出来。
     private long avmSafetyHoldUntilMs = 0L;
+    private long hookVehicleAmapHoldUntilMs = 0L;
+    private long lastHookVehicleCloseMapAtMs = 0L;
+    private boolean hookVehicleGuardStarted = false;
+    private boolean hookVehicleBaselineReady = false;
+    private boolean previousHookHazardActive = false;
+    private boolean previousHookRadarClose = false;
     private static final long AVM_FOREGROUND_HOLD_MS = 12000L;
     private static final long AVM_SIGNAL_HOLD_MS = 12000L;
+    private static final long HOOK_VEHICLE_HOLD_MS = 12000L;
+    private static final long HOOK_VEHICLE_CLOSE_THROTTLE_MS = 900L;
+    private static final int HOOK_RADAR_DISTANCE_THRESHOLD_CM = 80;
+    private static final int HOOK_RADAR_LEVEL_THRESHOLD = 5;
+    private static final long IGNITION_AMAP_WAKE_COOLDOWN_MS = 2 * 60 * 1000L;
+    private long lastIgnitionAmapWakeAtMs = 0L;
+    private boolean pendingIgnitionAmapWake = false;
+    private final Runnable hookVehicleGuardRunnable = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                checkHookVehicleAmapGuard("hook-monitor");
+            } catch (Throwable ignored) {
+            }
+            if (hookVehicleGuardStarted && mainHandler != null) {
+                mainHandler.postDelayed(this, 650L);
+            }
+        }
+    };
     private final Runnable foregroundSafetyMonitorRunnable = new Runnable() {
         @Override
         public void run() {
@@ -230,6 +255,7 @@ public class MainActivity extends Activity {
         registerAccessibilityForegroundReceiver();
         registerReverseSafetyObserver();
         startAmapForegroundSafetyMonitor();
+        startHookVehicleAmapGuardMonitor();
         updateReverseCameraSafetyState("create");
         checkAmapForegroundSafety("create");
         scheduleQuickStartHomeRecovery();
@@ -768,7 +794,7 @@ public class MainActivity extends Activity {
                 live2DView.setVisibility(View.VISIBLE);
                 live2DView.resumeLive2D();
                 if (!live2DView.isLive2DHealthy()) {
-                    live2DView.hardReloadLive2D();
+                    live2DView.recreateWebViewAndReload();
                     lastLive2DReloadAt = System.currentTimeMillis();
                 } else {
                     live2DView.applySettings();
@@ -838,6 +864,83 @@ public class MainActivity extends Activity {
         return false;
     }
 
+
+    private void startHookVehicleAmapGuardMonitor() {
+        if (hookVehicleGuardStarted || mainHandler == null) return;
+        hookVehicleGuardStarted = true;
+        hookVehicleBaselineReady = false;
+        previousHookHazardActive = false;
+        previousHookRadarClose = false;
+        mainHandler.postDelayed(hookVehicleGuardRunnable, 1800L);
+    }
+
+    private void stopHookVehicleAmapGuardMonitor() {
+        hookVehicleGuardStarted = false;
+        if (mainHandler != null) {
+            mainHandler.removeCallbacks(hookVehicleGuardRunnable);
+        }
+    }
+
+    private boolean isHookVehicleHoldActive() {
+        return System.currentTimeMillis() <= hookVehicleAmapHoldUntilMs;
+    }
+
+    private void checkHookVehicleAmapGuard(String reason) {
+        if (launcherView == null) return;
+        VehicleDataProvider.Snapshot s = launcherView.getVehicleSnapshot();
+        if (s == null || !s.valid) return;
+
+        boolean hazardActive = s.hazard;
+        boolean radarClose = isRadarCloseForAmapGuard(s.frontRadar) || isRadarCloseForAmapGuard(s.rearRadar);
+
+        if (!hookVehicleBaselineReady) {
+            hookVehicleBaselineReady = true;
+            previousHookHazardActive = hazardActive;
+            previousHookRadarClose = radarClose;
+            Log.i(TAG_AMAP, "hook vehicle guard baseline hazard=" + hazardActive + " radar=" + radarClose);
+            return;
+        }
+
+        boolean hazardRising = hazardActive && !previousHookHazardActive;
+        boolean radarRising = radarClose && !previousHookRadarClose;
+        previousHookHazardActive = hazardActive;
+        previousHookRadarClose = radarClose;
+
+        if (hazardRising || radarRising) {
+            String trigger = hazardRising ? "hazard" : "radar";
+            hookVehicleAmapHoldUntilMs = System.currentTimeMillis() + HOOK_VEHICLE_HOLD_MS;
+            closeAmapForHookVehicle(trigger + " " + reason);
+        } else if (isHookVehicleHoldActive()) {
+            closeAmapForHookVehicle("hold " + reason);
+        }
+    }
+
+    private void closeAmapForHookVehicle(String reason) {
+        long now = System.currentTimeMillis();
+        if (now - lastHookVehicleCloseMapAtMs < HOOK_VEHICLE_CLOSE_THROTTLE_MS) return;
+        lastHookVehicleCloseMapAtMs = now;
+        try {
+            if (amapFloatingCardController != null) {
+                amapFloatingCardController.setHomeVisible(false);
+            }
+            AmapFloatingCardController.sendCloseMapBroadcast(this);
+            Log.i(TAG_AMAP, "closemap hook-vehicle reason=" + reason);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private boolean isRadarCloseForAmapGuard(int[] values) {
+        if (values == null || values.length == 0) return false;
+        for (int v : values) {
+            if (v <= 0) continue;
+            // 距离型：常见为 cm，数值越小越近。20~80cm 基本处于全景/雷达强提示范围。
+            if (v >= 10 && v <= HOOK_RADAR_DISTANCE_THRESHOLD_CM) return true;
+            // 等级型：常见为 1~9，等级越大越近/越强。
+            if (v >= HOOK_RADAR_LEVEL_THRESHOLD && v <= 9) return true;
+        }
+        return false;
+    }
+
     private void updateAmapFloatingCardVisibility() {
         if (rootLayout == null || launcherView == null || mapCardContainer == null) {
             if (amapFloatingCardController != null) {
@@ -883,6 +986,7 @@ public class MainActivity extends Activity {
                 && !panoramaForegroundActive
                 && !MikuForegroundAccessibilityService.isPanoramaForegroundOrHold()
                 && !isAvmSafetyHoldActive()
+                && !isHookVehicleHoldActive()
                 && !isExplicitExternalLaunchActive();
     }
 
@@ -1188,6 +1292,107 @@ public class MainActivity extends Activity {
             explicitExternalLaunchUntilMs = 0L;
         }
         scheduleQuickStartHomeRecovery(forceLive2DHardReload, reason);
+        if (forceLive2DHardReload) {
+            scheduleIgnitionAmapColdWakeIfNeeded(reason);
+        }
+    }
+
+
+    private void scheduleIgnitionAmapColdWakeIfNeeded(final String reason) {
+        if (mainHandler == null || rootLayout == null) return;
+        final long now = System.currentTimeMillis();
+        if (pendingIgnitionAmapWake || now - lastIgnitionAmapWakeAtMs < IGNITION_AMAP_WAKE_COOLDOWN_MS) {
+            return;
+        }
+        SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+        if (!sp.getBoolean(AmapFloatingCardController.PREF_AMAP_COLD_START_FRONT_WARMUP_ENABLED, true)) {
+            return;
+        }
+        if (!AmapFloatingCardController.isAmapFloatingInstalled(this)) {
+            return;
+        }
+        pendingIgnitionAmapWake = true;
+        mainHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                pendingIgnitionAmapWake = false;
+                if (rootLayout == null || !isActivityResumed || !isHomePage()) return;
+                if (reverseCameraActive || panoramaForegroundActive || isAvmSafetyHoldActive() || isHookVehicleHoldActive()) return;
+                if (isAmapProcessProbablyRunning()) {
+                    Log.i(TAG_AMAP, "ignition amap wake skipped, process already running reason=" + reason);
+                    return;
+                }
+                launchAmapOnceForIgnitionRecovery(reason);
+            }
+        }, 5200L);
+    }
+
+    private boolean isAmapProcessProbablyRunning() {
+        try {
+            ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+            if (am == null) return false;
+            List<ActivityManager.RunningAppProcessInfo> list = am.getRunningAppProcesses();
+            if (list == null || list.isEmpty()) return false;
+            for (ActivityManager.RunningAppProcessInfo info : list) {
+                if (info == null) continue;
+                if (AmapFloatingCardController.AMAP_FLOATING_PACKAGE.equals(info.processName)) return true;
+                if (info.pkgList != null) {
+                    for (String p : info.pkgList) {
+                        if (AmapFloatingCardController.AMAP_FLOATING_PACKAGE.equals(p)) return true;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    private void launchAmapOnceForIgnitionRecovery(String reason) {
+        try {
+            Intent intent = getPackageManager().getLaunchIntentForPackage(AmapFloatingCardController.AMAP_FLOATING_PACKAGE);
+            if (intent == null) return;
+            lastIgnitionAmapWakeAtMs = System.currentTimeMillis();
+            int returnDelay = Math.max(3000, getSharedPreferences(PREFS, MODE_PRIVATE)
+                    .getInt(AmapFloatingCardController.PREF_AMAP_COLD_START_RETURN_DELAY_MS,
+                            AmapFloatingCardController.DEFAULT_COLD_START_RETURN_DELAY_MS));
+            explicitExternalLaunchUntilMs = System.currentTimeMillis() + returnDelay + 3000L;
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            Log.i(TAG_AMAP, "ignition amap cold wake launch reason=" + reason + " returnDelay=" + returnDelay);
+            mainHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    bringLauncherBackAfterIgnitionAmapWake();
+                }
+            }, returnDelay);
+        } catch (Throwable t) {
+            Log.w(TAG_AMAP, "ignition amap cold wake failed", t);
+        }
+    }
+
+    private void bringLauncherBackAfterIgnitionAmapWake() {
+        try {
+            explicitExternalLaunchUntilMs = 0L;
+            Intent back = new Intent(this, MainActivity.class);
+            back.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            startActivity(back);
+        } catch (Throwable ignored) {
+        }
+        if (mainHandler != null) {
+            mainHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (rootLayout == null || !isHomePage()) return;
+                    updateLive2DVisibility();
+                    if (live2DView != null && live2DView.isLive2DEnabled()) {
+                        live2DView.recreateWebViewAndReload();
+                    }
+                    updateAmapFloatingCardVisibility();
+                    ensureAmapMainFloatingWindowLoaded(false);
+                    Log.i(TAG_AMAP, "ignition amap cold wake returned launcher");
+                }
+            }, 450L);
+        }
     }
 
     private void scheduleQuickStartHomeRecovery() {
@@ -1213,9 +1418,9 @@ public class MainActivity extends Activity {
                         boolean hardReloadNow = forceLive2DHardReload && (delay == 1600L || delay == 10000L);
                         boolean unhealthyLate = delay >= 6200L && !live2DView.isLive2DHealthy();
                         if (hardReloadNow || unhealthyLate) {
-                            live2DView.hardReloadLive2D();
+                            live2DView.recreateWebViewAndReload();
                             lastLive2DReloadAt = System.currentTimeMillis();
-                            Log.i(TAG_AMAP, "Live2D recovery hardReload reason=" + reason + " delay=" + delay);
+                            Log.i(TAG_AMAP, "Live2D recovery recreateWebView reason=" + reason + " delay=" + delay);
                         }
                         scheduleLive2DHealthCheck();
                     }

@@ -119,17 +119,17 @@ public class AmapFloatingCardSettingsActivity extends Activity {
         dpiEdit = addEdit(root, "高德显示 DPI，0 表示不强制", false);
 
         coldStartWarmupCheck = new CheckBox(this);
-        coldStartWarmupCheck.setText("高德前台预热已停用（避免打断导航路线）");
+        coldStartWarmupCheck.setText("熄火快速启动后，如高德悬浮版进程未运行，则自动冷唤醒一次");
         coldStartWarmupCheck.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
-        coldStartWarmupCheck.setTextColor(Color.rgb(120, 120, 120));
-        coldStartWarmupCheck.setEnabled(false);
+        coldStartWarmupCheck.setTextColor(Color.WHITE);
+        coldStartWarmupCheck.setEnabled(true);
         coldStartWarmupCheck.setGravity(Gravity.CENTER_VERTICAL);
         coldStartWarmupCheck.setPadding(dp(12), 0, dp(12), 0);
         root.addView(coldStartWarmupCheck, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(54)
         ));
-        coldStartDelaySecondsEdit = addEdit(root, "高德前台预热延迟 秒（已停用，仅保留旧配置）", false);
-        coldStartDelaySecondsEdit.setEnabled(false);
+        coldStartDelaySecondsEdit = addEdit(root, "高德冷唤醒后返回桌面延迟 秒", false);
+        coldStartDelaySecondsEdit.setEnabled(true);
 
         Button saveAndTest = addButton(root, "保存并回首页测试显示悬浮地图");
         saveAndTest.setOnClickListener(new View.OnClickListener() {
@@ -302,7 +302,7 @@ public class AmapFloatingCardSettingsActivity extends Activity {
                 AmapFloatingCardController.PREF_AMAP_CARD_DPI,
                 AmapFloatingCardController.DEFAULT_DPI)));
         if (coldStartWarmupCheck != null) {
-            coldStartWarmupCheck.setChecked(false);
+            coldStartWarmupCheck.setChecked(sp.getBoolean(AmapFloatingCardController.PREF_AMAP_COLD_START_FRONT_WARMUP_ENABLED, true));
         }
         if (coldStartDelaySecondsEdit != null) {
             int delayMs = sp.getInt(
@@ -321,7 +321,7 @@ public class AmapFloatingCardSettingsActivity extends Activity {
         int forceWidth = Math.max(0, readInt(forceWidthEdit, AmapFloatingCardController.DEFAULT_FORCE_WIDTH_PX));
         int forceHeight = Math.max(0, readInt(forceHeightEdit, AmapFloatingCardController.DEFAULT_FORCE_HEIGHT_PX));
         int dpi = Math.max(0, readInt(dpiEdit, AmapFloatingCardController.DEFAULT_DPI));
-        boolean coldStartWarmupEnabled = false;
+        boolean coldStartWarmupEnabled = coldStartWarmupCheck == null || coldStartWarmupCheck.isChecked();
         int coldStartDelaySeconds = clamp(readInt(coldStartDelaySecondsEdit,
                 AmapFloatingCardController.DEFAULT_COLD_START_RETURN_DELAY_MS / 1000), 0, 30);
         int coldStartDelayMs = coldStartDelaySeconds * 1000;
@@ -400,7 +400,7 @@ public class AmapFloatingCardSettingsActivity extends Activity {
         forceHeightEdit.setText(String.valueOf(AmapFloatingCardController.DEFAULT_FORCE_HEIGHT_PX));
         dpiEdit.setText(String.valueOf(AmapFloatingCardController.DEFAULT_DPI));
         if (coldStartWarmupCheck != null) {
-            coldStartWarmupCheck.setChecked(false);
+            coldStartWarmupCheck.setChecked(true);
         }
         if (coldStartDelaySecondsEdit != null) {
             coldStartDelaySecondsEdit.setText(String.valueOf(AmapFloatingCardController.DEFAULT_COLD_START_RETURN_DELAY_MS / 1000));

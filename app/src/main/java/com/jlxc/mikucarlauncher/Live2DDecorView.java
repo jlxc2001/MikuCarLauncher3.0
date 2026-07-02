@@ -81,6 +81,26 @@ public class Live2DDecorView extends FrameLayout {
         setClickable(false);
         setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
 
+        recreateWebViewInternal(false);
+
+        setVisibility(View.GONE);
+    }
+
+
+    private void recreateWebViewInternal(boolean destroyOld) {
+        try {
+            if (destroyOld && webView != null) {
+                removeView(webView);
+                try { webView.stopLoading(); } catch (Throwable ignored) {}
+                try { webView.loadUrl("about:blank"); } catch (Throwable ignored) {}
+                try { webView.destroy(); } catch (Throwable ignored) {}
+            } else if (webView != null) {
+                removeView(webView);
+            }
+        } catch (Throwable ignored) {
+        }
+
+        Context context = getContext();
         webView = new WebView(context);
         webView.setBackgroundColor(Color.TRANSPARENT);
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
@@ -100,7 +120,6 @@ public class Live2DDecorView extends FrameLayout {
                 lastHeartbeatMs = lastPageLoadMs;
                 watchdogReloadCount = 0;
 
-                // 页面完成后延迟再同步一次位置，修复偶发错位。
                 watchdogHandler.postDelayed(new Runnable() {
                     @Override
                     public void run() {
@@ -146,8 +165,18 @@ public class Live2DDecorView extends FrameLayout {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
         ));
+    }
 
-        setVisibility(View.GONE);
+    public void recreateWebViewAndReload() {
+        stopWatchdog();
+        reloadToken++;
+        lastUrl = "";
+        lastPageLoadMs = System.currentTimeMillis();
+        lastHeartbeatMs = lastPageLoadMs;
+        watchdogReloadCount = 0;
+        recreateWebViewInternal(true);
+        applySettings();
+        startWatchdog();
     }
 
     public void setAdjustMode(boolean enable) {

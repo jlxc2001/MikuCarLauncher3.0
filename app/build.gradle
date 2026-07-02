@@ -11,8 +11,8 @@ android {
         applicationId 'com.jlxc.mikucarlauncher'
         minSdk 21
         targetSdk 28
-        versionCode 94
-        versionName '0.7.4.9-ignition-quick-recovery'
+        versionCode 95
+        versionName '0.7.5.0-ignition-amap-live2d-hook-guard'
     }
 
     // GitHub 网页上传不会自动删除旧文件。
