@@ -32,6 +32,8 @@ import java.util.Locale;
 public class MainActivity extends Activity {
     private static final String TAG_AMAP = "MikuAmap";
     private static final String ACTION_FORFAN_REVERSING = "com.forfan.operator_reversing";
+    // 雷达 / 双闪 / 触摸车机全景按钮时，AVM 模块会发这个广播；倒车不一定是唯一触发源。
+    private static final String ACTION_LDFY_CAR360_CTRL = "com.ldfy.car360ctrl.action";
     private static final String SETTING_CARLETTER_REVERSE_STATE = "carletter_reserve_state";
     public static final String PREFS = "miku_car_launcher_settings";
     private static boolean sAmapColdStartWarmupDone = false;
@@ -90,28 +92,29 @@ public class MainActivity extends Activity {
     private boolean pendingLive2DHealthCheck = false;
     private BroadcastReceiver homeKeyReceiver;
     private BroadcastReceiver reverseStateReceiver;
+    private BroadcastReceiver accessibilityForegroundReceiver;
     private ContentObserver reverseStateObserver;
     private boolean reverseCameraActive = false;
     private Handler mainHandler;
+    private boolean quickStartRecoveryScheduled = false;
+    private long lastQuickStartRecoveryAt = 0L;
     private boolean panoramaForegroundActive = false;
     private boolean foregroundSafetyMonitorStarted = false;
     private long lastPanoramaCloseMapAt = 0L;
-    // V0.7.4.4：雷达/双闪触发的全景有时并不会让普通 App 可靠读到前台 Activity。
-    // 直接使用车辆数据里的 hazard / frontRadar / rearRadar 作为安全关闭条件，避免高德遮挡全景影像。
-    private boolean avmVehicleSignalActive = false;
-    private long avmVehicleSignalLastSeenAt = 0L;
-    private long lastVehicleSignalCloseMapAt = 0L;
-    private static final long AVM_VEHICLE_SIGNAL_HOLD_MS = 1800L;
+    // AVM 有时会把 Activity 短暂退到后台，但 BirdviewSurface / 摄像头画面仍在显示。
+    // 记录一个安全保持窗口，避免刚识别到全景后马上回到 Launcher 又把高德 show 出来。
+    private long avmSafetyHoldUntilMs = 0L;
+    private static final long AVM_FOREGROUND_HOLD_MS = 12000L;
+    private static final long AVM_SIGNAL_HOLD_MS = 12000L;
     private final Runnable foregroundSafetyMonitorRunnable = new Runnable() {
         @Override
         public void run() {
             try {
                 checkAmapForegroundSafety("foreground-monitor");
-                checkAmapVehicleSignalSafety("foreground-monitor");
             } catch (Throwable ignored) {
             }
             if (foregroundSafetyMonitorStarted && mainHandler != null) {
-                mainHandler.postDelayed(this, 250L);
+                mainHandler.postDelayed(this, 350L);
             }
         }
     };
@@ -224,12 +227,13 @@ public class MainActivity extends Activity {
         setContentView(rootLayout);
         registerHomeKeyReceiver();
         registerReverseSafetyObserver();
+        registerAccessibilityForegroundReceiver();
         startAmapForegroundSafetyMonitor();
         updateReverseCameraSafetyState("create");
         checkAmapForegroundSafety("create");
-        checkAmapVehicleSignalSafety("create");
-        // V0.7.4.4：高德逻辑仍保持最小状态机；倒车档位用 carletter_reserve_state，
-        // 手动全景用 AVM Activity 检测；雷达/双闪全景用车辆 hazard/radar 信号兜底关闭。
+        scheduleQuickStartSurfaceRecovery("create");
+        // V0.7.4.3：高德逻辑仍保持最小状态机；倒车档位用 carletter_reserve_state，
+        // 雷达/双闪触发的全景则用前台 AVM Activity / Window 检测精准关闭。
 
         rootLayout.post(new Runnable() {
             @Override
@@ -391,27 +395,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void closeAmapForVehicleSignal(String reason) {
-        keepAmapOnHomeKeyUntilMs = 0L;
-        amapHomeGuardUntilMs = 0L;
-        try {
-            if (mapCardContainer != null) {
-                mapCardContainer.setVisibility(View.GONE);
-            }
-            if (amapFloatingCardController != null) {
-                amapFloatingCardController.setHomeVisible(false);
-            } else {
-                AmapFloatingCardController.sendCloseMapBroadcast(this);
-            }
-            Log.i(TAG_AMAP, "closemap vehicle-signal reason=" + reason);
-        } catch (Throwable ignored) {
-            try {
-                AmapFloatingCardController.sendCloseMapBroadcast(this);
-            } catch (Throwable ignored2) {
-            }
-        }
-    }
-
     private void registerReverseSafetyObserver() {
         try {
             if (reverseStateObserver == null) {
@@ -446,10 +429,12 @@ public class MainActivity extends Activity {
                         if (intent == null) {
                             return;
                         }
-                        if (ACTION_FORFAN_REVERSING.equals(intent.getAction())) {
+                        String action = intent.getAction();
+                        if (ACTION_FORFAN_REVERSING.equals(action)) {
                             Log.i(TAG_AMAP, "receive reversing broadcast extras=" + (intent.getExtras() == null ? "null" : intent.getExtras().toString()));
                             // 车机广播和 carletter_reserve_state 写入几乎同时发生。
                             // 为了安全，收到倒车广播先立即 closemap，再短延迟读取设置确认状态。
+                            markAvmSafetyHold("forfan-reversing-broadcast", AVM_SIGNAL_HOLD_MS);
                             closeAmapForReverseCamera("forfan-broadcast-immediate");
                             if (rootLayout != null) {
                                 rootLayout.postDelayed(new Runnable() {
@@ -461,10 +446,33 @@ public class MainActivity extends Activity {
                             } else {
                                 updateReverseCameraSafetyState("forfan-broadcast");
                             }
+                        } else if (ACTION_LDFY_CAR360_CTRL.equals(action)) {
+                            // 双闪 / 雷达 / 全景按钮触发时，很多车机不会改 carletter_reserve_state，
+                            // 也可能让 AVM Activity 很快退到后台，只剩 BirdviewSurface 继续显示。
+                            // 收到全景控制广播后直接关闭高德，并保持一小段安全窗口。
+                            Log.i(TAG_AMAP, "receive ldfy car360 broadcast extras=" + (intent.getExtras() == null ? "null" : intent.getExtras().toString()));
+                            markAvmSafetyHold("ldfy-car360-broadcast", AVM_SIGNAL_HOLD_MS);
+                            closeAmapForReverseCamera("ldfy-car360-broadcast");
+                            if (mainHandler != null) {
+                                mainHandler.postDelayed(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        checkAmapForegroundSafety("ldfy-car360-delay-300");
+                                    }
+                                }, 300L);
+                                mainHandler.postDelayed(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        checkAmapForegroundSafety("ldfy-car360-delay-1200");
+                                    }
+                                }, 1200L);
+                            }
                         }
                     }
                 };
-                registerReceiver(reverseStateReceiver, new IntentFilter(ACTION_FORFAN_REVERSING));
+                IntentFilter filter = new IntentFilter(ACTION_FORFAN_REVERSING);
+                filter.addAction(ACTION_LDFY_CAR360_CTRL);
+                registerReceiver(reverseStateReceiver, filter);
             }
         } catch (Throwable t) {
             Log.w(TAG_AMAP, "register reverse broadcast failed", t);
@@ -521,6 +529,19 @@ public class MainActivity extends Activity {
     }
 
 
+    private void markAvmSafetyHold(String reason, long durationMs) {
+        long until = System.currentTimeMillis() + Math.max(1000L, durationMs);
+        if (until > avmSafetyHoldUntilMs) {
+            avmSafetyHoldUntilMs = until;
+        }
+        panoramaForegroundActive = true;
+        Log.i(TAG_AMAP, "avmSafetyHold until=" + avmSafetyHoldUntilMs + " reason=" + reason);
+    }
+
+    private boolean isAvmSafetyHoldActive() {
+        return System.currentTimeMillis() < avmSafetyHoldUntilMs;
+    }
+
     private void startAmapForegroundSafetyMonitor() {
         if (foregroundSafetyMonitorStarted) {
             return;
@@ -540,16 +561,29 @@ public class MainActivity extends Activity {
     }
 
     private void checkAmapForegroundSafety(String reason) {
-        ComponentName top = getTopActivityComponentCompat();
-        boolean active = isKnownPanoramaOrVehicleForeground(top);
+        ComponentName top = getAccessibilityForegroundComponentCompat();
+        if (top == null) {
+            top = getTopActivityComponentCompat();
+        }
+        boolean active = isKnownPanoramaOrVehicleForeground(top) || MikuForegroundAccessibilityService.isPanoramaForegroundOrHold();
+        long now = System.currentTimeMillis();
         if (active) {
-            panoramaForegroundActive = true;
-            long now = System.currentTimeMillis();
+            markAvmSafetyHold(reason + " top=" + flattenComponent(top), AVM_FOREGROUND_HOLD_MS);
             // 全景画面可能由雷达/双闪自动拉起，此时 MainActivity 会被 pause，不能依赖 onPause 的普通关闭逻辑。
             // 这里在 AVM 前台期间持续补发 closemap，但做轻微节流，避免 log 和广播过量。
             if (now - lastPanoramaCloseMapAt > 800L) {
                 lastPanoramaCloseMapAt = now;
                 closeAmapForReverseCamera(reason + " top=" + flattenComponent(top));
+            }
+            return;
+        }
+
+        // AVM Activity 有时已经 onStop / 退到后台，但 BirdviewSurface 摄像头层仍在显示。
+        // 在保持窗口内继续禁止 showmap，并节流补发 closemap，防止高德悬浮窗覆盖全景画面。
+        if (isAvmSafetyHoldActive()) {
+            if (now - lastPanoramaCloseMapAt > 800L) {
+                lastPanoramaCloseMapAt = now;
+                closeAmapForReverseCamera(reason + " avm-hold top=" + flattenComponent(top));
             }
             return;
         }
@@ -568,43 +602,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void checkAmapVehicleSignalSafety(String reason) {
-        VehicleDataProvider.Snapshot snapshot = launcherView == null
-                ? VehicleDataProvider.Snapshot.empty()
-                : launcherView.getVehicleSnapshot();
-        boolean hazard = snapshot != null && snapshot.hazard;
-        boolean frontRadar = snapshot != null && hasActiveRadar(snapshot.frontRadar);
-        boolean rearRadar = snapshot != null && hasActiveRadar(snapshot.rearRadar);
-        boolean active = hazard || frontRadar || rearRadar;
-        long now = System.currentTimeMillis();
-
-        if (active) {
-            avmVehicleSignalActive = true;
-            avmVehicleSignalLastSeenAt = now;
-            if (now - lastVehicleSignalCloseMapAt > 700L) {
-                lastVehicleSignalCloseMapAt = now;
-                closeAmapForVehicleSignal(reason
-                        + " hazard=" + hazard
-                        + " frontRadar=" + frontRadar
-                        + " rearRadar=" + rearRadar);
-            }
-            return;
-        }
-
-        if (avmVehicleSignalActive && now - avmVehicleSignalLastSeenAt > AVM_VEHICLE_SIGNAL_HOLD_MS) {
-            avmVehicleSignalActive = false;
-            Log.i(TAG_AMAP, "avmVehicleSignalActive=false reason=" + reason);
-            if (isActivityResumed && isHomePage() && rootLayout != null) {
-                rootLayout.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        updateAmapFloatingCardVisibility();
-                    }
-                });
-            }
-        }
-    }
-
     private ComponentName getTopActivityComponentCompat() {
         try {
             ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
@@ -612,6 +609,22 @@ public class MainActivity extends Activity {
             List<ActivityManager.RunningTaskInfo> tasks = am.getRunningTasks(1);
             if (tasks == null || tasks.isEmpty()) return null;
             return tasks.get(0).topActivity;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private ComponentName getAccessibilityForegroundComponentCompat() {
+        try {
+            if (!MikuForegroundAccessibilityService.isServiceConnected()
+                    && !MikuForegroundAccessibilityService.isAccessibilityEnabled(this)) {
+                return null;
+            }
+            ComponentName cn = MikuForegroundAccessibilityService.getCurrentComponent();
+            if (cn == null) return null;
+            String pkg = cn.getPackageName();
+            if (pkg == null || pkg.length() == 0 || getPackageName().equals(pkg)) return null;
+            return cn;
         } catch (Throwable ignored) {
             return null;
         }
@@ -680,7 +693,7 @@ public class MainActivity extends Activity {
     }
 
     private void ensureAmapMainFloatingWindowLoaded(final boolean closeFirst) {
-        if (rootLayout == null || amapFloatingCardController == null || !isHomePage() || !shouldShowAmapFloatingCardOnHome()) {
+        if (rootLayout == null || amapFloatingCardController == null || !isHomePage()) {
             return;
         }
         rootLayout.post(new Runnable() {
@@ -785,9 +798,8 @@ public class MainActivity extends Activity {
     }
 
     private void checkAmapSafetySuppression(String reason) {
-        // V0.7.4.4：普通第三方前台仍不做安全阻断；
-        // 但雷达/双闪属于车辆安全信号，使用明确的 VehicleDataProvider 快照关闭高德。
-        checkAmapVehicleSignalSafety(reason);
+        // V0.7.4.0：不再基于雷达数组/普通第三方前台做自动 close。
+        // 原逻辑在实车上会把普通返回首页也当作安全阻断，造成悬浮窗无法恢复。
     }
 
     private String getTopPackageCompat() {
@@ -818,19 +830,12 @@ public class MainActivity extends Activity {
     }
 
     private boolean isVehiclePanoramaOrReverseLikely() {
-        return reverseCameraActive || panoramaForegroundActive || avmVehicleSignalActive;
+        // V0.7.4.0：暂时禁用雷达数组推断。
+        // 之前只要雷达值为正就 closemap，实车上会导致首页高德被 vehicle-monitor 反复关闭。
+        return false;
     }
 
     private boolean hasActiveRadar(int[] values) {
-        if (values == null || values.length == 0) {
-            return false;
-        }
-        for (int v : values) {
-            // 常见约定：0 / 255 / 负数多为无效或未检测。只要出现 1~254，认为雷达正在触发。
-            if (v > 0 && v < 255) {
-                return true;
-            }
-        }
         return false;
     }
 
@@ -877,7 +882,8 @@ public class MainActivity extends Activity {
                 && isActivityResumed
                 && !reverseCameraActive
                 && !panoramaForegroundActive
-                && !avmVehicleSignalActive
+                && !MikuForegroundAccessibilityService.isPanoramaForegroundOrHold()
+                && !isAvmSafetyHoldActive()
                 && !isExplicitExternalLaunchActive();
     }
 
@@ -988,7 +994,6 @@ public class MainActivity extends Activity {
         }
         updateLive2DVisibility();
         updateReverseCameraSafetyState("show-home-page");
-        checkAmapVehicleSignalSafety("show-home-page");
         updateAmapFloatingCardVisibility();
         if (reloadLive2D) {
             reloadLive2DOnHome();
@@ -1085,6 +1090,83 @@ public class MainActivity extends Activity {
         homeKeyReceiver = null;
     }
 
+    private void registerAccessibilityForegroundReceiver() {
+        if (accessibilityForegroundReceiver != null) {
+            return;
+        }
+        accessibilityForegroundReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null || !MikuForegroundAccessibilityService.ACTION_FOREGROUND_CHANGED.equals(intent.getAction())) {
+                    return;
+                }
+                boolean avm = intent.getBooleanExtra(MikuForegroundAccessibilityService.EXTRA_AVM, false);
+                String pkg = intent.getStringExtra(MikuForegroundAccessibilityService.EXTRA_PACKAGE);
+                String cls = intent.getStringExtra(MikuForegroundAccessibilityService.EXTRA_CLASS);
+                if (avm) {
+                    markAvmSafetyHold("a11y-broadcast " + pkg + "/" + cls, AVM_FOREGROUND_HOLD_MS);
+                    closeAmapForReverseCamera("a11y-broadcast " + pkg + "/" + cls);
+                } else if (panoramaForegroundActive || isAvmSafetyHoldActive()) {
+                    checkAmapForegroundSafety("a11y-broadcast-normal " + pkg + "/" + cls);
+                }
+            }
+        };
+        try {
+            IntentFilter filter = new IntentFilter(MikuForegroundAccessibilityService.ACTION_FOREGROUND_CHANGED);
+            registerReceiver(accessibilityForegroundReceiver, filter);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void unregisterAccessibilityForegroundReceiver() {
+        if (accessibilityForegroundReceiver == null) {
+            return;
+        }
+        try {
+            unregisterReceiver(accessibilityForegroundReceiver);
+        } catch (Throwable ignored) {
+        }
+        accessibilityForegroundReceiver = null;
+    }
+
+    private void scheduleQuickStartSurfaceRecovery(String reason) {
+        if (rootLayout == null) return;
+        long now = System.currentTimeMillis();
+        if (quickStartRecoveryScheduled && now - lastQuickStartRecoveryAt < 12000L) {
+            return;
+        }
+        quickStartRecoveryScheduled = true;
+        lastQuickStartRecoveryAt = now;
+        final long[] delays = new long[]{600L, 1600L, 3200L, 6200L, 10000L};
+        for (final long delay : delays) {
+            rootLayout.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (rootLayout == null || !isHomePage()) return;
+                    updateLive2DVisibility();
+                    if (live2DView != null && live2DView.isLive2DEnabled()) {
+                        live2DView.setVisibility(View.VISIBLE);
+                        live2DView.resumeLive2D();
+                        if (!live2DView.isLive2DHealthy() && delay >= 3000L) {
+                            live2DView.hardReloadLive2D();
+                            lastLive2DReloadAt = System.currentTimeMillis();
+                        }
+                    }
+                    updateReverseCameraSafetyState("quick-start-recovery");
+                    checkAmapForegroundSafety("quick-start-recovery");
+                    updateAmapFloatingCardVisibility();
+                    if (shouldShowAmapFloatingCardOnHome() && amapFloatingCardController != null) {
+                        amapFloatingCardController.reloadMapWindow();
+                    }
+                    if (delay == delays[delays.length - 1]) {
+                        quickStartRecoveryScheduled = false;
+                    }
+                }
+            }, delay);
+        }
+        Log.i(TAG_AMAP, "quick-start surface recovery scheduled reason=" + reason);
+    }
+
     @Override
     protected void onUserLeaveHint() {
         super.onUserLeaveHint();
@@ -1106,6 +1188,7 @@ public class MainActivity extends Activity {
         }
         unregisterHomeKeyReceiver();
         unregisterReverseSafetyObserver();
+        unregisterAccessibilityForegroundReceiver();
         stopAmapForegroundSafetyMonitor();
         super.onDestroy();
     }
@@ -1171,7 +1254,6 @@ public class MainActivity extends Activity {
         isActivityResumed = true;
         updateReverseCameraSafetyState("resume");
         checkAmapForegroundSafety("resume");
-        checkAmapVehicleSignalSafety("resume");
         if (isHomePage()) {
             // 回到首页：普通第三方 App 的外部启动保护立即结束，允许立即重新 showmap。
             explicitExternalLaunchUntilMs = 0L;
@@ -1204,7 +1286,6 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     updateLive2DVisibility();
-                    checkAmapVehicleSignalSafety("resume-post");
                     updateAmapFloatingCardVisibility();
                     if (isHomePage()) {
                         ensureAmapMainFloatingWindowLoaded(false);
@@ -1212,6 +1293,7 @@ public class MainActivity extends Activity {
                     positionRearAiOverlay();
                 }
             });
+            scheduleQuickStartSurfaceRecovery("resume");
         }
     }
 
@@ -1244,14 +1326,12 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     checkAmapForegroundSafety("pause-delay-120");
-                    checkAmapVehicleSignalSafety("pause-delay-120");
                 }
             }, 120L);
             mainHandler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
                     checkAmapForegroundSafety("pause-delay-500");
-                    checkAmapVehicleSignalSafety("pause-delay-500");
                 }
             }, 500L);
         }
@@ -1274,7 +1354,6 @@ public class MainActivity extends Activity {
             }
             updateLive2DVisibility();
             updateReverseCameraSafetyState("window-focus");
-            checkAmapVehicleSignalSafety("window-focus");
             positionRearAiOverlay();
             updateAmapFloatingCardVisibility();
             if (isHomePage()) {

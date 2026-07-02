@@ -6,6 +6,7 @@ import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.text.InputType;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -42,6 +43,7 @@ public class AmapFloatingCardSettingsActivity extends Activity {
     private CheckBox coldStartWarmupCheck;
     private EditText coldStartDelaySecondsEdit;
     private TextView summaryValue;
+    private TextView accessibilityStatusValue;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -101,10 +103,11 @@ public class AmapFloatingCardSettingsActivity extends Activity {
         desc.setPadding(dp(26), dp(10), dp(26), dp(10));
         desc.setBackgroundColor(Color.WHITE);
         root.addView(desc, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(128)
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(156)
         ));
 
         summaryValue = addValue(root, "当前参数：");
+        accessibilityStatusValue = addValue(root, "无障碍前台检测：");
 
         insetDpEdit = addEdit(root, "inset 内缩 dp", false);
         xOffsetEdit = addEdit(root, "X 偏移 px", true);
@@ -160,6 +163,23 @@ public class AmapFloatingCardSettingsActivity extends Activity {
             @Override
             public void onClick(View view) {
                 AmapFloatingCardController.openAmapOverlayPermissionPage(AmapFloatingCardSettingsActivity.this);
+            }
+        });
+
+        Button accessibilityPermission = addButton(root, "打开无障碍权限设置（用于检测全景 App 前台）");
+        accessibilityPermission.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                MikuForegroundAccessibilityService.openAccessibilitySettings(AmapFloatingCardSettingsActivity.this);
+                Toast.makeText(AmapFloatingCardSettingsActivity.this, "请开启 MikuCarLauncher 前台应用检测服务", Toast.LENGTH_LONG).show();
+            }
+        });
+
+        Button refreshAccessibility = addButton(root, "刷新无障碍检测状态");
+        refreshAccessibility.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                refreshSummary();
             }
         });
 

@@ -866,9 +866,18 @@ adb shell am broadcast -a com.autonavi.plus.closemap
 - 退出 AVM 后回到首页，恢复普通首页 showmap 逻辑，不保留安全阻断倒计时。
 
 
-## V0.7.4.4 高德 AVM 车辆信号安全守护
-- 保持 V0.7.4.0 的高德最小状态机：不启动、不杀掉、不重启高德，只发送 showmap / closemap。
-- 保留倒车档位 `carletter_reserve_state` 关闭逻辑。
-- 新增车辆信号兜底：检测到双闪 hazard、前雷达或后雷达有效值时，立即发送 closemap，避免雷达/双闪触发全景时高德悬浮窗遮挡。
-- 雷达/双闪信号消失并保持约 1.8 秒后，回到首页才允许重新 showmap。
-- 保留 AVM 前台 Activity 检测，用于手动打开全景 App。
+## V0.7.4.4 高德全景 Surface 保持窗口修复
+- 保留 V0.7.4.0 的高德最小状态机：不启动、不杀、不重启高德，只发送 showmap / closemap。
+- 保留倒车档位 `carletter_reserve_state` 关闭高德逻辑。
+- 新增监听 `com.ldfy.car360ctrl.action`，用于双闪 / 雷达 / 全景按钮等非倒车触发场景。
+- 新增 AVM 安全保持窗口：检测到 `com.baony.avm360` / `AVMBVActivity` 后，即使 Activity 短暂退到后台，也会继续保持约 12 秒不显示高德，避免 BirdviewSurface 仍在显示时被高德悬浮窗遮挡。
+- AVM 保持窗口期间会节流补发 closemap；窗口结束并回到首页后再恢复 showmap。
+
+
+## V0.7.4.7 高德无障碍前台检测 + 快速启动恢复
+- 基于 V0.7.4.4 无故障版本修改，不叠加 V0.7.4.5/V0.7.4.6 的 Hook 雷达逻辑。
+- 新增 `MikuForegroundAccessibilityService`，用户授权无障碍后，只读取当前前台 package/class，用于检测全景 App。
+- 检测到 `com.baony.avm360`、`AVMBVActivity`、`avm`、`panorama`、`birdview` 等全景相关前台窗口时，立即发送 `com.autonavi.plus.closemap`。
+- Launcher 不启动、不杀、不 force-stop、不重启高德；仍只管理 `showmap/closemap` 广播。
+- 在 1号卡片悬浮高德设置页加入无障碍授权入口和当前前台包名状态显示。
+- 针对熄火后快速启动导致 Live2D/高德偶发失效，新增首页轻量自恢复：启动/恢复后的 0.6s、1.6s、3.2s、6.2s、10s 自动恢复 Live2D 并补发 showmap。

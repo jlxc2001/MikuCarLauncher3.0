@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">MikuCarLauncher</string>
+    <string name="miku_foreground_accessibility_desc">MikuCarLauncher 前台应用检测：用于识别全景影像是否在前台，并关闭高德悬浮窗避免遮挡。</string>
 </resources>
