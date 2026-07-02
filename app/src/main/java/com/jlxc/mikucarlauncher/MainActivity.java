@@ -92,6 +92,9 @@ public class MainActivity extends Activity {
     private boolean pendingLive2DHealthCheck = false;
     private BroadcastReceiver homeKeyReceiver;
     private BroadcastReceiver reverseStateReceiver;
+    private BroadcastReceiver accessibilityForegroundReceiver;
+    private BroadcastReceiver ignitionRecoveryReceiver;
+    private long lastIgnitionRecoveryRequestAt = 0L;
     private ContentObserver reverseStateObserver;
     private boolean reverseCameraActive = false;
     private Handler mainHandler;
@@ -223,6 +226,7 @@ public class MainActivity extends Activity {
 
         setContentView(rootLayout);
         registerHomeKeyReceiver();
+        registerIgnitionRecoveryReceiver();
         registerAccessibilityForegroundReceiver();
         registerReverseSafetyObserver();
         startAmapForegroundSafetyMonitor();
@@ -1128,27 +1132,102 @@ public class MainActivity extends Activity {
         accessibilityForegroundReceiver = null;
     }
 
+    private void registerIgnitionRecoveryReceiver() {
+        if (ignitionRecoveryReceiver != null) return;
+        ignitionRecoveryReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null) return;
+                String action = intent.getAction();
+                if (Intent.ACTION_SCREEN_ON.equals(action)) {
+                    triggerIgnitionRecovery("screen-on", true);
+                } else if (Intent.ACTION_USER_PRESENT.equals(action)) {
+                    triggerIgnitionRecovery("user-present", true);
+                } else if (Intent.ACTION_BOOT_COMPLETED.equals(action)) {
+                    triggerIgnitionRecovery("boot-completed", true);
+                } else if (Intent.ACTION_TIME_CHANGED.equals(action)) {
+                    triggerIgnitionRecovery("time-changed", false);
+                } else if (Intent.ACTION_TIME_TICK.equals(action)) {
+                    // 部分车机快速启动不会完整走 onCreate/onResume，但 TIME_TICK 会恢复；节流后用来兜底。
+                    triggerIgnitionRecovery("time-tick", false);
+                }
+            }
+        };
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_SCREEN_ON);
+        filter.addAction(Intent.ACTION_USER_PRESENT);
+        filter.addAction(Intent.ACTION_BOOT_COMPLETED);
+        filter.addAction(Intent.ACTION_TIME_CHANGED);
+        filter.addAction(Intent.ACTION_TIME_TICK);
+        try {
+            registerReceiver(ignitionRecoveryReceiver, filter);
+        } catch (Throwable ignored) {
+            ignitionRecoveryReceiver = null;
+        }
+    }
+
+    private void unregisterIgnitionRecoveryReceiver() {
+        if (ignitionRecoveryReceiver == null) return;
+        try {
+            unregisterReceiver(ignitionRecoveryReceiver);
+        } catch (Throwable ignored) {
+        }
+        ignitionRecoveryReceiver = null;
+    }
+
+    private void triggerIgnitionRecovery(String reason, boolean forceLive2DHardReload) {
+        long now = System.currentTimeMillis();
+        // TIME_TICK 等广播只做兜底，避免每分钟都硬重载。
+        long minInterval = forceLive2DHardReload ? 2500L : 45000L;
+        if (now - lastIgnitionRecoveryRequestAt < minInterval) {
+            return;
+        }
+        lastIgnitionRecoveryRequestAt = now;
+        Log.i(TAG_AMAP, "ignition recovery request reason=" + reason + " forceLive2D=" + forceLive2DHardReload);
+        if (isHomePage()) {
+            explicitExternalLaunchUntilMs = 0L;
+        }
+        scheduleQuickStartHomeRecovery(forceLive2DHardReload, reason);
+    }
+
     private void scheduleQuickStartHomeRecovery() {
+        scheduleQuickStartHomeRecovery(false, "normal");
+    }
+
+    private void scheduleQuickStartHomeRecovery(final boolean forceLive2DHardReload, final String reason) {
         if (rootLayout == null || mainHandler == null) return;
-        long[] delays = new long[]{600L, 1600L, 3200L, 6200L, 10000L};
+        // 熄火后的快速启动/伪休眠恢复可能会杀掉 WebView 渲染进程或高德悬浮进程，
+        // 所以这里的恢复窗口拉长到 30 秒，并在中段强制 hard reload 一次 Live2D。
+        long[] delays = new long[]{0L, 600L, 1600L, 3200L, 6200L, 10000L, 16000L, 24000L, 30000L};
         for (final long delay : delays) {
             mainHandler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
                     if (rootLayout == null || !isActivityResumed || !isHomePage()) return;
+                    keepFullscreen();
                     updateLive2DVisibility();
                     if (live2DView != null && live2DView.isLive2DEnabled()) {
                         live2DView.setVisibility(View.VISIBLE);
                         live2DView.resumeLive2D();
-                        if (!live2DView.isLive2DHealthy() && delay >= 6200L) {
+                        live2DView.applySettings();
+                        boolean hardReloadNow = forceLive2DHardReload && (delay == 1600L || delay == 10000L);
+                        boolean unhealthyLate = delay >= 6200L && !live2DView.isLive2DHealthy();
+                        if (hardReloadNow || unhealthyLate) {
                             live2DView.hardReloadLive2D();
                             lastLive2DReloadAt = System.currentTimeMillis();
+                            Log.i(TAG_AMAP, "Live2D recovery hardReload reason=" + reason + " delay=" + delay);
                         }
+                        scheduleLive2DHealthCheck();
                     }
                     updateAmapFloatingCardVisibility();
                     if (shouldShowAmapFloatingCardOnHome()) {
                         ensureAmapMainFloatingWindowLoaded(false);
+                        if (amapFloatingCardController != null && delay >= 1600L) {
+                            // 快速启动后高德悬浮端可能刚恢复，重置去重状态并补发 showmap。
+                            amapFloatingCardController.reloadMapWindow();
+                        }
                     }
+                    Log.i(TAG_AMAP, "quick/ignition recovery tick reason=" + reason + " delay=" + delay);
                 }
             }, delay);
         }
@@ -1165,6 +1244,7 @@ public class MainActivity extends Activity {
             AmapFloatingCardController.sendCloseMapBroadcast(this);
         }
         unregisterHomeKeyReceiver();
+        unregisterIgnitionRecoveryReceiver();
         unregisterAccessibilityForegroundReceiver();
         unregisterReverseSafetyObserver();
         stopAmapForegroundSafetyMonitor();

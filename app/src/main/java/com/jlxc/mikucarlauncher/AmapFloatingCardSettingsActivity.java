@@ -96,6 +96,7 @@ public class AmapFloatingCardSettingsActivity extends Activity {
                 + "\n强制宽高为 0 时自动按 1号卡片区域计算；DPI 为 0 时不强制高德显示 DPI。"
                 + "\n当前默认按测试机完美值换算：x=225 y=50 w=1125 h=515 dpi=200。"
                 + "\nV0.7.4.0 起已停用高德前台预热：Launcher 不再主动打开/重启高德 App，避免打断正在导航的路线。"
+                + "\nV0.7.4.9 起增强快速启动恢复：屏幕点亮/解锁/时间恢复后，会重建 Live2D 并补发 showmap。"
                 + "\n注意：自动悬浮只会在 Launcher 首页显示；进入本页或其它页面会自动关闭。");
         desc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
         desc.setTextColor(Color.rgb(64, 64, 64));
@@ -436,14 +437,10 @@ public class AmapFloatingCardSettingsActivity extends Activity {
         String ageText = age == Long.MAX_VALUE ? "无" : (age + "ms 前");
         accessibilityStatusValue.setText("无障碍前台检测：" + (enabled ? "已授权" : "未授权")
                 + " / " + (connected ? "服务运行中" : "服务未连接")
-                + "
-当前前台包名：" + (pkg == null || pkg.length() == 0 ? "无" : pkg)
-                + "
-当前前台类名：" + (cls == null || cls.length() == 0 ? "无" : cls)
-                + "
-最近事件：" + ageText
-                + "
-安全模式：仅监听 com.baony.avm360 的窗口状态变化，不读取屏幕内容。");
+                + "\n当前前台包名：" + (pkg == null || pkg.length() == 0 ? "无" : pkg)
+                + "\n当前前台类名：" + (cls == null || cls.length() == 0 ? "无" : cls)
+                + "\n最近事件：" + ageText
+                + "\n安全模式：仅监听 com.baony.avm360 的窗口状态变化，不读取屏幕内容。");
     }
 
     private void refreshSummary() {

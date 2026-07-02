@@ -880,3 +880,16 @@ adb shell am broadcast -a com.autonavi.plus.closemap
 - 检测到全景 App / AVMBVActivity 前台时发送 `com.autonavi.plus.closemap`。
 - 移除对 `com.ts.MainUI` 的宽泛前台误判，避免 MainApp / 车机系统界面被无障碍或高德逻辑干扰。
 - 快速启动/冷启动回到首页后，会在 0.6s / 1.6s / 3.2s / 6.2s / 10s 自动恢复 Live2D 和高德 showmap。
+
+
+## V0.7.4.8a 编译修复
+- 修复 `AmapFloatingCardSettingsActivity.java` 无障碍状态说明字符串换行写法错误导致的 Java 编译失败。
+- 仅修复编译错误，不改动 V0.7.4.8 的高德 / Live2D / 无障碍运行逻辑。
+
+
+## V0.7.4.9 熄火快速启动恢复增强
+- 基于 V0.7.4.8a 编译修正版继续修改。
+- 新增屏幕点亮 / 用户解锁 / 开机完成 / 时间恢复监听。
+- 车机熄火低功耗后快速启动时，会在 0~30 秒内多次恢复首页资源。
+- 恢复动作包括：Live2D resume/applySettings/hardReload、Amap showmap 补发、1号地图卡片状态刷新。
+- 仍然不主动启动/杀掉/force-stop 高德地图，避免打断正在导航的路线。
